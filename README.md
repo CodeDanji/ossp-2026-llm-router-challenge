@@ -174,6 +174,17 @@ PYTHONPATH=src python3 tools/check_runtime.py \
 사용합니다. 공개 모델별 outcome과 최종 평가 자료는 컨테이너에 전달하지
 않으며, 공식 장비와 다른 환경에서 측정한 시간은 참고값입니다.
 
+## PromptBudget router
+
+`promptbudget` is the shipped content-only router. It bundles a verified Train/Dev-calibrated artifact and does not download models, data, or dependencies at runtime.
+
+```console
+PYTHONPATH=src python3 -m promptbudget.runtime \
+  --input data/toy/inputs.json --tier fast --output build/promptbudget/fast.json
+```
+
+Recreate the artifact from public material only with `tools/validate_data.py`, `tools/train_oof.py`, `tools/calibrate_policy.py`, and `tools/build_artifact.py`. Aggregate evidence and exact commands are in [`reports/README.md`](reports/README.md). The checked-in comparison selected `absolute-linear` (weighted Dev score `0.670085227273`); `delta-linear` and sparse kNN remain deferred rather than being emitted as unverified fallbacks.
+
 ## 문서
 
 이 챌린지를 이해하는 데 가장 중요한 네 문서는 다음과 같습니다.

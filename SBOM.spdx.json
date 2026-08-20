@@ -1,0 +1,44 @@
+{
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "spdxVersion": "SPDX-2.3",
+  "creationInfo": {
+    "created": "2026-08-20T00:00:00Z",
+    "creators": ["Tool: promptbudget-release-verification"]
+  },
+  "dataLicense": "CC0-1.0",
+  "name": "ossp-2026-llm-router-challenge",
+  "documentNamespace": "https://github.com/SKT-FLY-AI/OSSP-LLM-Router-Challenge/spdx/promptbudget-v1",
+  "packages": [
+    {
+      "SPDXID": "SPDXRef-PromptBudget",
+      "name": "ossp-2026-llm-router-challenge",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "Copyright 2026 SK TELECOM CO., LTD."
+    },
+    {
+      "SPDXID": "SPDXRef-NumPy",
+      "name": "numpy",
+      "versionInfo": "2.0.2",
+      "downloadLocation": "https://pypi.org/project/numpy/2.0.2/",
+      "filesAnalyzed": false,
+      "licenseConcluded": "BSD-3-Clause",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION"
+    }
+  ],
+  "relationships": [
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-PromptBudget"
+    },
+    {
+      "spdxElementId": "SPDXRef-NumPy",
+      "relationshipType": "DEV_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-PromptBudget"
+    }
+  ]
+}

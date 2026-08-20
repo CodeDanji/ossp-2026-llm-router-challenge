@@ -4,3 +4,4 @@
 include NOTICE
 include LICENSES/Apache-2.0.txt
 recursive-include src/ossp_router/resources *.json
+recursive-include src/promptbudget/resources *.json

@@ -1,0 +1,1 @@
+{"artifact_sha256":"5ef940c896546a6c98190e9bbbbbe22bfc060f4a9fa9fcd0df4fecbfd76236cb","checks":["canonical-artifact","bundled-resource-match","license-notice-sbom","pinned-container-base"],"external_status":"pending-submission-url-and-image-digest","local_status":"pass","policy_id":"ossp-2026-prompt-router-v1","report_type":"promptbudget-release-verification-v1"}

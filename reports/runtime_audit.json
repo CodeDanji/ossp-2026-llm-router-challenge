@@ -1,0 +1,1 @@
+{"checks":["content-only-source","no-network-import","repeatable-selection","input-order-permutation"],"episode_count":3,"report_type":"promptbudget-runtime-audit-v1","status":"pass"}

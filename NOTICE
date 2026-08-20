@@ -13,3 +13,6 @@ content-free outcomes. It contains no model generations, model answers, gold
 answers, or AIME problem text. Third-party benchmark material retains its
 upstream license, attribution, modification notice, and distribution terms as
 described in DATA_LICENSES.md and THIRD_PARTY_NOTICES.md.
+
+Development-only training dependency:
+- NumPy 2.0.2, BSD-3-Clause; source: https://pypi.org/project/numpy/2.0.2/
