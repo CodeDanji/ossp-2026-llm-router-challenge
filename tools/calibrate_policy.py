@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import replace
 from decimal import Decimal
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -26,6 +27,7 @@ from promptbudget.artifact import TierSettings, load_artifact, write_artifact
 from promptbudget.input_adapter import to_prompt_record, to_submission
 from promptbudget.policy import ModelPrediction, predict_models
 from promptbudget.schema import PromptBudgetError
+from promptbudget.safety import FAST_MARGIN, aggregate_upper_cost_ratio, canonical_content_group, is_fast_admissible
 
 
 LAMBDAS = (0.0, 0.01, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0)
@@ -44,6 +46,10 @@ def _write_json(path: Path, value: Mapping[str, object]) -> None:
     finally:
         if temporary.exists():
             temporary.unlink()
+
+
+def _file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _validate_matrix(inputs, outcomes) -> None:
@@ -73,26 +79,38 @@ def _select(predictions: Mapping[str, ModelPrediction], settings: TierSettings, 
     return min(candidates, key=lambda item: (-item.utility, item.c_upper, MODEL_IDS.index(item.model_id))).model_id
 
 
-def _settings() -> Sequence[TierSettings]:
-    grid = tuple(
-        TierSettings(lambda_cost, min_gain, min_gain, safety_multiplier, max_relative_cost)
-        for lambda_cost in LAMBDAS
-        for min_gain in MIN_GAINS
-        for safety_multiplier in SAFETY_MULTIPLIERS
-        for max_relative_cost in MAX_RELATIVE_COSTS
-    )
-    return grid + (TierSettings(100.0, 1.0, 1.0, 1.25, 1.0),)
+def _safety_settings(frozen: TierSettings) -> Sequence[TierSettings]:
+    """Dev may calibrate only the operational safety multiplier, never structure."""
+
+    return tuple(replace(frozen, safety_multiplier=value) for value in SAFETY_MULTIPLIERS)
 
 
-def _rank(report: Mapping[str, object], settings: TierSettings):
-    return (
-        Decimal(str(report["quality_points_total"])),
-        -Decimal(str(report["total_cost"])),
-        -Decimal(str(settings.lambda_cost)),
-        Decimal(str(settings.min_gain_ax31)),
-        -Decimal(str(settings.safety_multiplier)),
-        -Decimal(str(settings.max_relative_cost)),
-    )
+def _is_tier_admissible(tier: str, upper_cost_ratio: Decimal, tier_cap: Decimal) -> bool:
+    """Apply the pre-registered Fast margin and strict limits for other tiers."""
+
+    if tier == "fast":
+        return is_fast_admissible((upper_cost_ratio,), tier_cap)
+    return upper_cost_ratio < tier_cap
+
+
+def _actual_cost(outcome, policy) -> Decimal:
+    rates = policy.models[outcome.model_id]
+    return rates.fixed_cost + (
+        rates.input_token_rate * Decimal(outcome.input_tokens)
+        + rates.output_token_rate * Decimal(outcome.output_tokens)
+    ) / Decimal(policy.token_unit)
+
+
+def _upper_cost_bounds(inputs, outcomes, predictions, decisions, settings, policy):
+    """Keep the conformal request upper and clustered aggregate upper independent."""
+
+    outcome_index = {(item.episode_id, item.model_id): item for item in outcomes.outcomes}
+    upper_costs, baseline_costs, groups = [], [], []
+    for episode, row, model_id in zip(inputs.episodes, predictions, decisions):
+        upper_costs.append(Decimal(str(row[model_id].c_upper)) * Decimal(str(settings.safety_multiplier)))
+        baseline_costs.append(_actual_cost(outcome_index[(episode.episode_id, policy.light_model_id)], policy))
+        groups.append(canonical_content_group(to_prompt_record(episode).text))
+    return aggregate_upper_cost_ratio(upper_costs, baseline_costs, groups)
 
 
 def calibrate(args: argparse.Namespace) -> Mapping[str, object]:
@@ -114,32 +132,52 @@ def calibrate(args: argparse.Namespace) -> Mapping[str, object]:
     baseline = {tier: to_submission(inputs, tier, (policy.light_model_id for _ in inputs.episodes), policy.policy_id) for tier in TIERS}
     selected: Dict[str, TierSettings] = {}
     tier_reports: Dict[str, Mapping[str, object]] = {}
-    grid = _settings()
     for tier in TIERS:
         best = None
+        grid = _safety_settings(draft.tiers[tier])
         for settings in grid:
-            decisions = (_select(predictions, settings, policy.light_model_id) for predictions in base_predictions)
+            decisions = tuple(_select(predictions, settings, policy.light_model_id) for predictions in base_predictions)
             candidate = dict(baseline)
             candidate[tier] = to_submission(inputs, tier, decisions, policy.policy_id)
             scored = score_submissions(inputs, outcomes, tuple(candidate[name] for name in TIERS), policy)["tiers"][tier]
-            if Decimal(str(scored["budget_ratio"])) >= policy.tiers[tier].budget_multiplier:
+            conformal_ratio, aggregate_ratio, upper_ratio = _upper_cost_bounds(
+                inputs, outcomes, base_predictions, decisions, settings, policy
+            )
+            if not _is_tier_admissible(tier, upper_ratio, policy.tiers[tier].budget_multiplier):
                 continue
-            rank = _rank(scored, settings)
-            if best is None or rank > best[0]:
-                best = (rank, settings, scored)
+            if best is None or settings.safety_multiplier < best[0].safety_multiplier:
+                best = (settings, {
+                    **scored,
+                    "conformal_upper_cost_ratio": str(conformal_ratio),
+                    "aggregate_upper_cost_ratio": str(aggregate_ratio),
+                    "upper_cost_ratio": str(upper_ratio),
+                })
         if best is None:
-            raise RuntimeError("no strictly in-budget calibration candidate for tier {0}".format(tier))
-        selected[tier] = best[1]
-        tier_reports[tier] = best[2]
-    artifact = replace(draft, tiers=selected, code_version="train-oof-dev-calibrated-v1")
+            selected[tier] = draft.tiers[tier]
+            tier_reports[tier] = {"fallback": "v1", "budget_ratio": None}
+            continue
+        selected[tier] = best[0]
+        tier_reports[tier] = best[1]
+    artifact = replace(draft, tiers=selected, code_version="train-oof-dev-calibrated-v2")
     write_artifact(args.artifact, args.manifest, artifact)
     report = {
-        "report_type": "promptbudget-dev-calibration-v1",
-        "candidate_count_per_tier": len(grid),
+        "report_type": "promptbudget-dev-calibration-certificate-v2",
+        "certificate_kind": "operational calibration, not independent generalization evaluation",
+        "frozen_structure": {
+            "family": draft.family,
+            "hash_dimension": draft.hash_dimension,
+            "selected_sparse_features": draft.training_provenance.get("selected_sparse_feature_count"),
+            "alpha": draft.training_provenance.get("alpha"),
+            "residual_family": "one-sided conformal upper multiplier",
+        },
+        "input_sha256": _file_sha256(args.input),
+        "outcomes_sha256": _file_sha256(args.outcomes),
+        "draft_artifact_sha256": _file_sha256(args.draft_artifact),
+        "candidate_count_per_tier": len(SAFETY_MULTIPLIERS),
         "policy_id": policy.policy_id,
         "tiers": {
             tier: {
-                "candidate_count": len(grid),
+                "candidate_count": len(SAFETY_MULTIPLIERS),
                 "settings": {
                     "lambda_cost": selected[tier].lambda_cost,
                     "min_gain_ax31": selected[tier].min_gain_ax31,
@@ -148,10 +186,15 @@ def calibrate(args: argparse.Namespace) -> Mapping[str, object]:
                     "max_relative_cost": selected[tier].max_relative_cost,
                 },
                 "actual_cost_ratio": tier_reports[tier]["budget_ratio"],
-                "budget_margin": str(policy.tiers[tier].budget_multiplier - Decimal(str(tier_reports[tier]["budget_ratio"]))),
-                "tier_score": tier_reports[tier]["tier_score"],
-                "model_distribution": tier_reports[tier]["model_counts"],
-                "budget_pass": Decimal(str(tier_reports[tier]["budget_ratio"])) < policy.tiers[tier].budget_multiplier,
+                "aggregate_upper_cost_ratio": tier_reports[tier].get("aggregate_upper_cost_ratio"),
+                "conformal_upper_cost_ratio": tier_reports[tier].get("conformal_upper_cost_ratio"),
+                "upper_cost_ratio": tier_reports[tier].get("upper_cost_ratio"),
+                "budget_margin": None if tier_reports[tier]["budget_ratio"] is None else str(policy.tiers[tier].budget_multiplier - Decimal(str(tier_reports[tier]["budget_ratio"]))),
+                "tier_score": tier_reports[tier].get("tier_score"),
+                "model_distribution": tier_reports[tier].get("model_counts"),
+                "budget_pass": tier_reports[tier]["budget_ratio"] is not None,
+                "fast_margin_required": str(FAST_MARGIN) if tier == "fast" else None,
+                "fallback": tier_reports[tier].get("fallback"),
             }
             for tier in TIERS
         },

@@ -185,6 +185,9 @@ PYTHONPATH=src python3 -m promptbudget.runtime \
 
 Recreate the artifact from public material only with `tools/validate_data.py`, `tools/train_oof.py`, `tools/calibrate_policy.py`, and `tools/build_artifact.py`. Aggregate evidence and exact commands are in [`reports/README.md`](reports/README.md). The checked-in comparison selected `absolute-linear` (weighted Dev score `0.670085227273`); `delta-linear` and sparse kNN remain deferred rather than being emitted as unverified fallbacks.
 
+The v2 Train/Dev/locked-holdout boundary and the sole locked-evaluation command
+are documented in [`docs/PROMPTBUDGET_V2_OPERATIONS.md`](docs/PROMPTBUDGET_V2_OPERATIONS.md).
+
 ## 문서
 
 이 챌린지를 이해하는 데 가장 중요한 네 문서는 다음과 같습니다.

@@ -29,6 +29,7 @@ from ossp_router.protocol import (
 from promptbudget.artifact import PromptBudgetArtifact, TierSettings, write_artifact
 from promptbudget.input_adapter import to_prompt_record
 from promptbudget.linear import LinearHead
+from promptbudget.safety import CandidateResult, OUTER_SEEDS, canonical_content_group, choose_one_standard_error, grouped_folds, repeated_outer_folds
 from promptbudget.text_features import DENSE_FEATURE_NAMES, extract_features
 from validate_data import file_sha256, validate_batches
 
@@ -48,8 +49,8 @@ def _validate_arguments(args: argparse.Namespace) -> None:
         raise ValueError("--max-sparse-features must be positive")
     if not math.isfinite(args.alpha) or args.alpha <= 0:
         raise ValueError("--alpha must be a positive finite number")
-    if args.folds <= 1:
-        raise ValueError("--folds must be at least 2 for OOF training")
+    if args.folds != 5:
+        raise ValueError("--folds is fixed at 5 for leakage-safe outer CV")
 
 
 def _feature_rows(inputs: Any, hash_dimension: int) -> Tuple[Any, List[Mapping[int, float]]]:
@@ -140,15 +141,65 @@ def _predict(matrix: Any, intercept: Any, coefficients: Any) -> Any:
     return matrix @ coefficients + intercept
 
 
-def _oof(matrix: Any, targets: Any, folds: int, alpha: float) -> Any:
-    row_count = matrix.shape[0]
-    predictions = np.empty_like(targets)
-    fold_ids = np.arange(row_count) % folds
-    for fold in range(folds):
-        held_out = fold_ids == fold
-        intercept, coefficients = _fit_ridge(matrix[~held_out], targets[~held_out], alpha)
-        predictions[held_out] = _predict(matrix[held_out], intercept, coefficients)
-    return predictions
+def _fit_predict_indices(
+    dense: Any,
+    sparse_rows: Sequence[Mapping[int, float]],
+    targets: Any,
+    train_indices: Sequence[int],
+    predict_indices: Sequence[int],
+    max_sparse_features: int,
+    alpha: float,
+) -> Tuple[Any, List[int], Any, Any]:
+    """Fit all data-derived state on train indices and predict a disjoint set."""
+
+    selected = _select_sparse(
+        [sparse_rows[index] for index in train_indices],
+        targets[list(train_indices), :3].mean(axis=1),
+        max_sparse_features,
+    )
+    train_matrix = _design_matrix(dense[list(train_indices)], [sparse_rows[index] for index in train_indices], selected)
+    predict_matrix = _design_matrix(dense[list(predict_indices)], [sparse_rows[index] for index in predict_indices], selected)
+    intercept, coefficients = _fit_ridge(train_matrix, targets[list(train_indices)], alpha)
+    return _predict(predict_matrix, intercept, coefficients), selected, intercept, coefficients
+
+
+def _candidate_grid(args: argparse.Namespace) -> Tuple[Tuple[int, float], ...]:
+    """A small pre-registered grid; the runtime supports the absolute-linear family only."""
+
+    feature_counts = tuple(sorted({min(64, args.max_sparse_features), args.max_sparse_features}))
+    alphas = tuple(sorted({args.alpha, max(1.0, args.alpha / 10.0), args.alpha * 10.0}))
+    return tuple((features, alpha) for features in feature_counts for alpha in alphas)
+
+
+def _select_candidate(
+    dense: Any,
+    sparse_rows: Sequence[Mapping[int, float]],
+    targets: Any,
+    groups: Sequence[str],
+    available_indices: Sequence[int],
+    args: argparse.Namespace,
+    seed: int,
+) -> Tuple[Tuple[int, float], CandidateResult]:
+    """Use inner grouped validation only; callers never pass outer-test indices here."""
+
+    local_groups = [groups[index] for index in available_indices]
+    inner = grouped_folds(local_groups, folds=4, seed=seed)
+    results = []
+    grid = _candidate_grid(args)
+    for grid_index, (feature_count, alpha) in enumerate(grid):
+        losses = []
+        for fold in inner:
+            train_indices = [available_indices[index] for index in fold.train_indices]
+            validation_indices = [available_indices[index] for index in fold.validation_indices]
+            predictions, _selected, _intercept, _coefficients = _fit_predict_indices(
+                dense, sparse_rows, targets, train_indices, validation_indices, feature_count, alpha
+            )
+            losses.append(float(((predictions - targets[validation_indices]) ** 2).mean()))
+        results.append(CandidateResult(
+            "absolute-linear-{0}".format(grid_index), tuple(losses), feature_count, 0, 1.0, grid_index
+        ))
+    chosen = choose_one_standard_error(results)
+    return grid[chosen.grid_index], chosen
 
 
 def _heads(intercept: Any, coefficients: Any, selected: Sequence[int]) -> Tuple[Mapping[str, LinearHead], Mapping[str, LinearHead], LinearHead]:
@@ -184,17 +235,46 @@ def train(args: argparse.Namespace) -> Mapping[str, object]:
     inputs = load_input(args.input)
     outcomes = load_outcomes(args.outcomes)
     rows, _outcome_rows = validate_batches(inputs, outcomes)
-    if args.folds > rows:
-        raise ValueError("--folds must not exceed Train row count")
     policy = load_policy(args.policy) if args.policy is not None else load_bundled_policy()
     if policy.schema_version != inputs.schema_version:
         raise ProtocolError("policy schema_version does not match Train input")
     dense, sparse_rows = _feature_rows(inputs, args.hash_dimension)
     targets, actual_outputs = _targets(inputs, outcomes)
-    selected = _select_sparse(sparse_rows, targets[:, :3].mean(axis=1), args.max_sparse_features)
-    matrix = _design_matrix(dense, sparse_rows, selected)
-    oof_predictions = _oof(matrix, targets, args.folds, args.alpha)
-    intercept, coefficients = _fit_ridge(matrix, targets, args.alpha)
+    groups = tuple(canonical_content_group(to_prompt_record(episode).text) for episode in inputs.episodes)
+    if len(set(groups)) < 5:
+        raise ValueError("Train requires at least five distinct content groups for outer CV")
+    outer_prediction_sum = np.zeros_like(targets)
+    outer_prediction_count = np.zeros((targets.shape[0], 1), dtype=np.int64)
+    outer_report = []
+    for seed, outer_fold in repeated_outer_folds(groups):
+        spec, candidate = _select_candidate(
+            dense, sparse_rows, targets, groups, outer_fold.train_indices, args, seed
+        )
+        predictions, _selected, _intercept, _coefficients = _fit_predict_indices(
+            dense, sparse_rows, targets, outer_fold.train_indices, outer_fold.validation_indices, spec[0], spec[1]
+        )
+        outer_prediction_sum[list(outer_fold.validation_indices)] += predictions
+        outer_prediction_count[list(outer_fold.validation_indices)] += 1
+        outer_report.append({
+            "seed": seed,
+            "outer_train_rows": len(outer_fold.train_indices),
+            "outer_test_rows": len(outer_fold.validation_indices),
+            "outer_train_groups": len({groups[index] for index in outer_fold.train_indices}),
+            "outer_test_groups": len({groups[index] for index in outer_fold.validation_indices}),
+            "selected_candidate": candidate.name,
+            "selected_sparse_feature_count": spec[0],
+            "selected_alpha": spec[1],
+            "inner_validation_losses": list(candidate.fold_losses),
+        })
+    if (outer_prediction_count == 0).any():
+        raise RuntimeError("nested outer CV did not predict every Train row")
+    oof_predictions = outer_prediction_sum / outer_prediction_count
+    final_spec, final_candidate = _select_candidate(
+        dense, sparse_rows, targets, groups, tuple(range(rows)), args, OUTER_SEEDS[0]
+    )
+    _full_predictions, selected, intercept, coefficients = _fit_predict_indices(
+        dense, sparse_rows, targets, tuple(range(rows)), tuple(range(rows)), final_spec[0], final_spec[1]
+    )
     quality_heads, output_heads, input_head = _heads(intercept, coefficients, selected)
     predicted_outputs = np.maximum(1.0, np.expm1(np.clip(oof_predictions[:, 3:6], -50.0, 50.0)))
     residuals = {
@@ -206,30 +286,55 @@ def train(args: argparse.Namespace) -> Mapping[str, object]:
         "train_input_sha256": file_sha256(args.input),
         "train_outcomes_sha256": file_sha256(args.outcomes),
         "row_count": rows,
-        "folds": args.folds,
-        "alpha": float(args.alpha),
-        "max_sparse_features": args.max_sparse_features,
+        "outer_folds": 5,
+        "inner_folds": 4,
+        "outer_seeds": list(OUTER_SEEDS),
+        "alpha": float(final_spec[1]),
+        "max_sparse_features": final_spec[0],
+        "selected_sparse_feature_count": len(selected),
         "residual_quantile": RESIDUAL_QUANTILE,
+        "bucket_definition": "global-only-v2; small conditional buckets use global fallback",
+        "bucket_minimum_samples": 1,
+        "global_fallback_rule": "use global one-sided multiplier when a bucket is undersized",
     }
     artifact = PromptBudgetArtifact(
         args.hash_dimension, tuple(DENSE_FEATURE_NAMES), policy.policy_id, policy_sha256(policy),
-        quality_heads, output_heads, input_head, residuals, tiers, "absolute-linear", "train-oof-v1", provenance,
+        quality_heads, output_heads, input_head, residuals, tiers, "absolute-linear", "train-nested-grouped-cv-v2", provenance,
     )
     write_artifact(args.artifact, args.manifest, artifact)
     mse = (oof_predictions - targets) ** 2
     report = {
-        "report_type": "promptbudget-train-oof-v1",
+        "report_type": "promptbudget-train-nested-grouped-cv-v2",
         "policy_id": policy.policy_id,
         "policy_sha256": policy_sha256(policy),
         "training_provenance": provenance,
         "hash_dimension": args.hash_dimension,
         "selected_sparse_feature_count": len(selected),
+        "selected_candidate": {
+            "name": final_candidate.name,
+            "family": "absolute-linear",
+            "alpha": final_spec[1],
+            "inner_validation_losses": list(final_candidate.fold_losses),
+        },
+        "split_provenance": {
+            "content_group_count": len(set(groups)),
+            "outer_folds": outer_report,
+            "outer_test_use": "comparison reporting only; never passed to candidate selection or final fitting",
+        },
         "oof_mse": {
             "quality": {model_id: float(mse[:, index].mean()) for index, model_id in enumerate(MODEL_IDS)},
             "log1p_output_tokens": {model_id: float(mse[:, 3 + index].mean()) for index, model_id in enumerate(MODEL_IDS)},
             "log1p_input_tokens_ax31_light": float(mse[:, 6].mean()),
         },
         "output_residual_multipliers": residuals,
+        "comparison": {
+            "reference": "fixed-v1",
+            "resampling_unit": "content-group",
+            "bootstrap_seed": 20260825,
+            "bootstrap_repetitions": 1000,
+            "primary_endpoint": "quality_points_total",
+            "note": "outer predictions are report-only and are not reused for final selection",
+        },
     }
     _write_report(args.report, report)
     return report
