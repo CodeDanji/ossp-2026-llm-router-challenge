@@ -231,6 +231,28 @@ def _fit_predict_indices(
     return _predict(predict_matrix, intercept, coefficients), selected, intercept, coefficients
 
 
+def fit_predict_specs(
+    dense: Any,
+    sparse_rows: Sequence[Mapping[int, float]],
+    targets: Any,
+    train_indices: Sequence[int],
+    predict_indices: Sequence[int],
+    specs: Sequence[Tuple[int, float]],
+) -> Mapping[Tuple[int, float], Tuple[Any, List[int], Any, Any]]:
+    """Fit every alpha after preparing each feature-count matrix once."""
+
+    prepared = _prepare_fold_matrices(
+        dense, sparse_rows, targets, train_indices, predict_indices,
+        [feature_count for feature_count, _alpha in specs],
+    )
+    result = {}
+    for feature_count, alpha in specs:
+        train_matrix, predict_matrix, selected = prepared[feature_count]
+        intercept, coefficients = _fit_ridge(train_matrix, targets[list(train_indices)], alpha)
+        result[(feature_count, alpha)] = (_predict(predict_matrix, intercept, coefficients), selected, intercept, coefficients)
+    return result
+
+
 def _prepare_fold_matrices(
     dense: Any,
     sparse_rows: Sequence[Mapping[int, float]],
@@ -335,18 +357,23 @@ def _tier_score(decisions: Sequence[int], targets: Any, actual_costs: Any, tier:
 
 
 def _cross_fit_predictions(dense: Any, sparse_rows: Sequence[Mapping[int, float]], targets: Any, groups: Sequence[str], indices: Sequence[int], spec: Tuple[int, float], seed: int) -> Any | None:
+    return _cross_fit_predictions_for_specs(dense, sparse_rows, targets, groups, indices, (spec,), seed).get(spec)
+
+
+def _cross_fit_predictions_for_specs(dense: Any, sparse_rows: Sequence[Mapping[int, float]], targets: Any, groups: Sequence[str], indices: Sequence[int], specs: Sequence[Tuple[int, float]], seed: int) -> Mapping[Tuple[int, float], Any]:
     local_groups = [groups[index] for index in indices]
     if len(set(local_groups)) < 4:
-        return None
-    total = np.zeros((len(indices), targets.shape[1]), dtype=np.float64)
+        return {}
+    total = {spec: np.zeros((len(indices), targets.shape[1]), dtype=np.float64) for spec in specs}
     counts = np.zeros((len(indices), 1), dtype=np.int64)
     for fold in grouped_folds(local_groups, folds=4, seed=seed):
         fit_indices = [indices[index] for index in fold.train_indices]
         validation_indices = [indices[index] for index in fold.validation_indices]
-        prediction, _selected, _intercept, _coefficients = _fit_predict_indices(dense, sparse_rows, targets, fit_indices, validation_indices, spec[0], spec[1])
-        total[list(fold.validation_indices)] += prediction
+        predictions = fit_predict_specs(dense, sparse_rows, targets, fit_indices, validation_indices, specs)
+        for spec, (prediction, _selected, _intercept, _coefficients) in predictions.items():
+            total[spec][list(fold.validation_indices)] += prediction
         counts[list(fold.validation_indices)] += 1
-    return None if (counts == 0).any() else total / counts
+    return {} if (counts == 0).any() else {spec: prediction / counts for spec, prediction in total.items()}
 
 
 def _select_candidate(
@@ -368,11 +395,13 @@ def _select_candidate(
     for fold in inner:
         train_indices = [available_indices[index] for index in fold.train_indices]
         validation_indices = [available_indices[index] for index in fold.validation_indices]
+        calibration_by_spec = _cross_fit_predictions_for_specs(dense, sparse_rows, targets, groups, train_indices, grid, seed)
+        validation_by_spec = fit_predict_specs(dense, sparse_rows, targets, train_indices, validation_indices, grid)
         for spec in grid:
-            calibration_predictions = _cross_fit_predictions(dense, sparse_rows, targets, groups, train_indices, spec, seed)
+            calibration_predictions = calibration_by_spec.get(spec)
             if calibration_predictions is None:
                 continue
-            validation_predictions, _selected, _intercept, _coefficients = _fit_predict_indices(dense, sparse_rows, targets, train_indices, validation_indices, spec[0], spec[1])
+            validation_predictions, _selected, _intercept, _coefficients = validation_by_spec[spec]
             # The caller attaches policy and actual costs to the targets namespace for this train-only helper.
             actual_costs, character_counts, policy = args._actual_costs, args._character_counts, args._policy
             calibration = _cost_calibration(calibration_predictions, actual_costs[train_indices], [character_counts[index] for index in train_indices], policy)

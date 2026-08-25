@@ -24,6 +24,16 @@ SPEC.loader.exec_module(train_oof)
 
 
 class TrainOofV2Test(unittest.TestCase):
+    def test_batch_fit_predicts_each_alpha_from_one_feature_preparation(self) -> None:
+        dense = np.zeros((5, 2), dtype=np.float64)
+        sparse = ({0: 1.0}, {1: 1.0}, {0: 1.0}, {1: 1.0}, {0: 1.0})
+        targets = np.ones((5, 7), dtype=np.float64)
+        results = train_oof.fit_predict_specs(
+            dense, sparse, targets, (0, 1, 2, 3), (4,), ((1, 1.0), (1, 10.0), (2, 1.0))
+        )
+        self.assertEqual({(1, 1.0), (1, 10.0), (2, 1.0)}, set(results))
+        self.assertEqual((1, 7), results[(1, 1.0)][0].shape)
+
     def test_v21_training_rejects_artifact_outputs_outside_its_build_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
