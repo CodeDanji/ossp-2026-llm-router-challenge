@@ -163,6 +163,30 @@ def _fit_predict_indices(
     return _predict(predict_matrix, intercept, coefficients), selected, intercept, coefficients
 
 
+def _prepare_fold_matrices(
+    dense: Any,
+    sparse_rows: Sequence[Mapping[int, float]],
+    targets: Any,
+    train_indices: Sequence[int],
+    predict_indices: Sequence[int],
+    feature_counts: Sequence[int],
+) -> Mapping[int, Tuple[Any, Any, List[int]]]:
+    """Select sparse features once per fold/feature count, independent of alpha."""
+
+    train_sparse = [sparse_rows[index] for index in train_indices]
+    predict_sparse = [sparse_rows[index] for index in predict_indices]
+    target = targets[list(train_indices), :3].mean(axis=1)
+    prepared = {}
+    for feature_count in sorted(set(feature_counts)):
+        selected = _select_sparse(train_sparse, target, feature_count)
+        prepared[feature_count] = (
+            _design_matrix(dense[list(train_indices)], train_sparse, selected),
+            _design_matrix(dense[list(predict_indices)], predict_sparse, selected),
+            selected,
+        )
+    return prepared
+
+
 def _candidate_grid(args: argparse.Namespace) -> Tuple[Tuple[int, float], ...]:
     """A small pre-registered grid; the runtime supports the absolute-linear family only."""
 
@@ -184,19 +208,24 @@ def _select_candidate(
 
     local_groups = [groups[index] for index in available_indices]
     inner = grouped_folds(local_groups, folds=4, seed=seed)
-    results = []
     grid = _candidate_grid(args)
-    for grid_index, (feature_count, alpha) in enumerate(grid):
-        losses = []
-        for fold in inner:
-            train_indices = [available_indices[index] for index in fold.train_indices]
-            validation_indices = [available_indices[index] for index in fold.validation_indices]
-            predictions, _selected, _intercept, _coefficients = _fit_predict_indices(
-                dense, sparse_rows, targets, train_indices, validation_indices, feature_count, alpha
-            )
-            losses.append(float(((predictions - targets[validation_indices]) ** 2).mean()))
+    losses = [[] for _item in grid]
+    for fold in inner:
+        train_indices = [available_indices[index] for index in fold.train_indices]
+        validation_indices = [available_indices[index] for index in fold.validation_indices]
+        prepared = _prepare_fold_matrices(
+            dense, sparse_rows, targets, train_indices, validation_indices,
+            [feature_count for feature_count, _alpha in grid],
+        )
+        for grid_index, (feature_count, alpha) in enumerate(grid):
+            train_matrix, validation_matrix, _selected = prepared[feature_count]
+            intercept, coefficients = _fit_ridge(train_matrix, targets[train_indices], alpha)
+            predictions = _predict(validation_matrix, intercept, coefficients)
+            losses[grid_index].append(float(((predictions - targets[validation_indices]) ** 2).mean()))
+    results = []
+    for grid_index, (feature_count, _alpha) in enumerate(grid):
         results.append(CandidateResult(
-            "absolute-linear-{0}".format(grid_index), tuple(losses), feature_count, 0, 1.0, grid_index
+            "absolute-linear-{0}".format(grid_index), tuple(losses[grid_index]), feature_count, 0, 1.0, grid_index
         ))
     chosen = choose_one_standard_error(results)
     return grid[chosen.grid_index], chosen

@@ -85,6 +85,12 @@ def _safety_settings(frozen: TierSettings) -> Sequence[TierSettings]:
     return tuple(replace(frozen, safety_multiplier=value) for value in SAFETY_MULTIPLIERS)
 
 
+def _v1_all_light_fallback() -> TierSettings:
+    """Return the explicit safe fallback when no v2 candidate is admissible."""
+
+    return TierSettings(100.0, 1.0, 1.0, 1.25, 1.0)
+
+
 def _is_tier_admissible(tier: str, upper_cost_ratio: Decimal, tier_cap: Decimal) -> bool:
     """Apply the pre-registered Fast margin and strict limits for other tiers."""
 
@@ -153,8 +159,8 @@ def calibrate(args: argparse.Namespace) -> Mapping[str, object]:
                     "upper_cost_ratio": str(upper_ratio),
                 })
         if best is None:
-            selected[tier] = draft.tiers[tier]
-            tier_reports[tier] = {"fallback": "v1", "budget_ratio": None}
+            selected[tier] = _v1_all_light_fallback()
+            tier_reports[tier] = {"fallback": "v1-all-light", "budget_ratio": None}
             continue
         selected[tier] = best[0]
         tier_reports[tier] = best[1]

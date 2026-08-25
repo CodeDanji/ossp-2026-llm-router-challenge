@@ -27,6 +27,13 @@ class CalibratePolicyV2Test(unittest.TestCase):
         self.assertTrue(calibrate_policy._is_tier_admissible("balanced", Decimal("0.999999"), cap))
         self.assertFalse(calibrate_policy._is_tier_admissible("balanced", cap, cap))
 
+    def test_missing_candidate_uses_the_explicit_all_light_v1_fallback(self) -> None:
+        fallback = calibrate_policy._v1_all_light_fallback()
+        self.assertEqual(100.0, fallback.lambda_cost)
+        self.assertEqual(1.0, fallback.min_gain_ax31)
+        self.assertEqual(1.0, fallback.min_gain_think)
+        self.assertEqual(1.0, fallback.max_relative_cost)
+
 
 if __name__ == "__main__":
     unittest.main()
