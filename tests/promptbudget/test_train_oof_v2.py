@@ -72,6 +72,11 @@ class TrainOofV2Test(unittest.TestCase):
         self.assertEqual(safe, train_oof.choose_tier_policy("fast", (safe, aggressive)))
         self.assertIsNone(train_oof.choose_tier_policy("premium", (rejected,)))
 
+    def test_all_light_predicted_route_has_one_relative_cost_even_when_calibrated(self) -> None:
+        costs = np.asarray(((9.0, 18.0, 27.0), (12.0, 24.0, 36.0)), dtype=np.float64)
+        self.assertEqual(1.0, train_oof._relative_predicted_cost_ratio(costs, (0, 0)))
+        self.assertEqual(2.0, train_oof._relative_predicted_cost_ratio(costs, (1, 1)))
+
     def test_prepares_selected_features_once_for_each_feature_count(self) -> None:
         dense = np.zeros((4, 2), dtype=np.float64)
         sparse = ({0: 1.0}, {1: 1.0}, {0: 1.0}, {1: 1.0})

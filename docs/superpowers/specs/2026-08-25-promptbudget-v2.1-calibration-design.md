@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: Copyright 2026 SK TELECOM CO., LTD.
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # PromptBudget v2.1 Calibration Design
 
 ## Decision
@@ -20,15 +25,15 @@ For a model and prompt, predicted monetary cost is calculated from the existing
 input/output absolute heads and the frozen routing-policy rate card.  The
 nonconformity score is actual monetary cost divided by predicted monetary cost.
 The higher empirical 99th percentile of Train-only grouped cross-fit OOF scores
-is the multiplier.  `TierSettings.safety_multiplier` is fixed at `1.0` for
-every v2.1 candidate.
+is the persisted multiplier. `TierSettings.safety_multiplier` is a separate
+policy factor selected on public Dev with the tier threshold, cost lambda, and
+maximum relative cost.
 
-During an inner validation fold, a candidate is admissible only when the ratio
-of summed predicted upper costs to summed actual Light costs meets the tier
-bound in that fold: Fast `<=1.15`, Balanced `<2`, Premium `<4`.  The prior
-group-level aggregate upper-ratio calculation is retained only as a diagnostic
-and never changes admission.  If calibration cannot produce a positive,
-finite multiplier, the candidate must choose Light.
+During Train diagnostics, a candidate's relative predicted cost is compared to
+the matching predicted all-Light route, never actual Light cost. This keeps the
+all-Light fallback at ratio 1 even with a conservative multiplier. If
+calibration cannot produce a positive, finite multiplier, the candidate must
+choose Light.
 
 ## Selection
 
@@ -38,20 +43,15 @@ four-fold inner selection on all Train rows, then runs a separate seed-137
 grouped cross-fit pass to calibrate costs and fits the selected head on all
 Train rows.
 
-Each common absolute head candidate is evaluated with independent tier-policy
-candidates.  The common minimum-gain setting is assigned to both `ax31` and
-`axk1-think`.  The official tier score is calculated from the existing frozen
-policy scorer.  One-standard-error selection ranks eligible policies by:
-
-1. lower grouped mean upgrade fraction;
-2. lower maximum relative cost;
-3. higher common minimum gain;
-4. higher cost lambda;
-5. pre-registered grid order.
-
-The common head is selected by the sum of the three selected tier validation
-scores.  Comparisons use 10,000 content-group paired-bootstrap repetitions and
-seed `20260825`.
+Train selects and calibrates common absolute heads without any Dev outcome. It
+may emit a conservative starter tier policy, but that is not the submission
+policy. On public Dev, each tier searches the complete fixed grid of
+`lambda_cost`, common minimum gain (assigned to both non-Light models), maximum
+relative cost, and safety multiplier. The official scorer supplies the quality
+and actual-cost result; candidates must meet the actual tier budget with the
+Fast 0.10 margin. Ties prefer the larger safety multiplier and then lower actual
+cost. Dev calibration can be repeated as policies improve; it is official
+public validation model selection, not an independent generalization claim.
 
 ## Integrity, Dev, and Diagnostics
 
@@ -60,11 +60,11 @@ the candidate ledger, fold admission decisions, cost calibration distributions,
 routing analysis, paired-bootstrap confidence intervals, code/policy/grid
 digests, and the four fixed claim labels from the research handoff.
 
-The observed Dev split is a one-time `exploratory_confirmation`.  Its SQLite
-reservation key is the artifact hash, manifest hash, Dev input digest, and Dev
-outcome digest.  It records the code/policy digest and its before/after artifact
-and manifest hashes, and rejects any second use of the same key.  It cannot
-alter model, policy, multiplier, or claim selection.
+Dev is the official public validation/tuning split. Its score, token, and cost
+outcomes may be used repeatedly to select tier policy parameters and compare
+candidate artifacts. They never become runtime inputs, model-training targets,
+or prompt features. Hidden evaluation inputs remain the independent final
+evaluation.
 
 ## Rejected Alternatives
 
@@ -72,5 +72,5 @@ alter model, policy, multiplier, or claim selection.
   the artifact it calibrates.
 - A global-only multiplier is rejected because it deliberately discards the
   fixed length-bucket safety rule.
-- Using Dev for parameter selection is rejected because Dev is already
-  observed and must remain exploratory.
+- Treating Dev as a one-use independent test is rejected because the official
+  workflow explicitly assigns it to threshold and cost-safety calibration.

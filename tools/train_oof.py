@@ -356,6 +356,15 @@ def _predicted_costs(predictions: Any, character_counts: Sequence[int], calibrat
     return costs
 
 
+def _relative_predicted_cost_ratio(costs: Any, decisions: Sequence[int]) -> float:
+    """Compare a candidate route with the matching predicted all-light route."""
+
+    baseline = float(costs[:, 0].sum())
+    if baseline <= 0.0:
+        raise ValueError("predicted light cost must be positive")
+    return float(costs[range(len(decisions)), list(decisions)].sum() / baseline)
+
+
 def _decisions(predictions: Any, costs: Any, settings: TierSettings) -> Tuple[int, ...]:
     result = []
     for quality_row, cost_row in zip(np.clip(predictions[:, :3], 0.0, 1.0), costs):
@@ -431,7 +440,10 @@ def _select_candidate(
                     decisions = _decisions(validation_predictions, costs, settings)
                     state = states[(spec, tier, index)]
                     state[0].append(_tier_score(decisions, targets[validation_indices, :3], actual_costs[validation_indices], tier, policy))
-                    state[1].append(float(costs[range(len(decisions)), list(decisions)].sum() / actual_costs[validation_indices, 0].sum()))
+                    # Admission is about relative *predicted* cost.  Dividing by actual
+                    # light cost would reject the all-light fallback whenever the
+                    # conservative calibration multiplier is above one.
+                    state[1].append(_relative_predicted_cost_ratio(costs, decisions))
                     state[2].append(float(sum(decision != 0 for decision in decisions) / len(decisions)))
     selected = {}
     selection = {}

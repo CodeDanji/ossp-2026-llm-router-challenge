@@ -1,10 +1,15 @@
+<!--
+SPDX-FileCopyrightText: Copyright 2026 SK TELECOM CO., LTD.
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # PromptBudget v2.1 Research Baseline Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the leakage-controlled v2.1 absolute-linear research artifact, Train-only policy selection, diagnostics, and one-time exploratory Dev confirmation.
+**Goal:** Build the leakage-controlled v2.1 absolute-linear research artifact, Train head/cost learning, public-Dev tier-policy calibration, and diagnostics.
 
-**Architecture:** Keep v1 artifact parsing and the default runtime resource unchanged. Add a versioned v2 artifact cost-calibration payload, reuse the existing standard-library policy/runtime and SQLite ledger patterns, and replace the v2 training script's raw-MSE selection with Train-only nested policy scoring.
+**Architecture:** Keep v1 artifact parsing and the default runtime resource unchanged. Add a versioned v2 artifact cost-calibration payload, fit heads and OOF calibration on Train only, then use the official public Dev split repeatedly to select tier policy parameters. Runtime remains prompt-only.
 
 **Tech Stack:** Python 3.9+, NumPy training-only, standard library runtime, SQLite, unittest.
 
@@ -17,8 +22,8 @@
 | `src/promptbudget/artifact.py` | Read/write v1 and v2 artifacts, including model×bucket cost calibration. |
 | `src/promptbudget/policy.py` | Select the length bucket and apply the persisted cost multiplier. |
 | `src/promptbudget/safety.py` | Fixed bucket names, conservative policy tie-break, and reusable calibration helpers. |
-| `tools/train_oof.py` | Train-only nested selection, direct monetary calibration, aggregate reports. |
-| `tools/evaluate_locked.py` | Reserve and write the append-only exploratory Dev confirmation. |
+| `tools/train_oof.py` | Train-only head selection, direct monetary calibration, aggregate reports. |
+| `tools/calibrate_policy.py` | Repeated public-Dev tier-policy calibration. |
 | `tests/promptbudget/test_artifact_policy.py` | Artifact compatibility and bucketed runtime-cost assertions. |
 | `tests/promptbudget/test_safety.py` | Calibration and deterministic conservative-choice assertions. |
 | `tests/promptbudget/test_train_oof_v2.py` | Train-only selection and outer-test isolation fixtures. |
@@ -66,7 +71,7 @@ self.assertEqual(1.2, values["short"])
 - [ ] Re-run the focused test; expect `OK`.
 - [ ] Commit `feat: add monetary OOF calibration helpers`.
 
-### Task 3: Replace raw-MSE selection with inner policy scoring
+### Task 3: Select Train heads and retain only a conservative starter policy
 
 **Files:**
 - Modify: `tools/train_oof.py`
@@ -80,8 +85,8 @@ self.assertEqual("v1-all-light", chosen.fallback)
 ```
 
 - [ ] Run `PYTHONPATH=src python -m unittest tests.promptbudget.test_train_oof_v2 -v`; expect missing selection helper failures.
-- [ ] Enumerate the specified common-head and per-tier grids exactly. For each inner fit, make grouped cross-fit predictions only from inner-fit rows, derive model×bucket 99% multipliers, score the validation decisions with the frozen scorer, and admit only the specified Fast/Balanced/Premium upper-cost ratios. Fit selected heads on each outer-train, write outer outcomes only to the report, and perform final seed-137 selection plus separate seed-137 OOF calibration on all Train rows.
-- [ ] Implement one-SE ordering with grouped mean upgrade fraction, max relative cost, higher minimum gain, higher lambda, then grid index. Use `TierSettings(..., safety_multiplier=1.0, ...)` and assign one common min gain to both non-Light models.
+- [ ] Enumerate the common-head grid exactly. For each grouped fit, make predictions only from Train rows, derive model×bucket 99% multipliers, fit selected heads on each outer-train, write outer outcomes only to the report, and perform final seed-137 selection plus separate seed-137 OOF calibration on all Train rows.
+- [ ] Retain a conservative starter policy in the Train artifact. Dev will select lambda, gains, maximum relative cost, and safety multiplier.
 - [ ] Re-run the focused test; expect `OK`.
 - [ ] Commit `feat: select PromptBudget v2.1 policies on Train only`.
 
@@ -104,25 +109,25 @@ self.assertFalse(report["claims"]["external_generalization_claim"])
 - [ ] Re-run the focused test; expect `OK`.
 - [ ] Commit `feat: report PromptBudget v2.1 research diagnostics`.
 
-### Task 5: Add one-time exploratory Dev confirmation
+### Task 5: Add repeated public Dev policy calibration
 
 **Files:**
 - Modify: `tools/evaluate_locked.py`
 - Modify: `tests/promptbudget/test_locked_eval.py`
 - Modify: `docs/PROMPTBUDGET_V2_OPERATIONS.md`
 
-- [ ] Add a failing test that a reservation key derived from artifact, manifest, Dev input, and Dev outcome hashes cannot be reserved twice, and that modifying either artifact or manifest causes confirmation rejection before scoring.
+- [ ] Add failing tests proving the public Dev grid varies lambda, gains, maximum relative cost, and safety multiplier while preserving Fast margin admission.
 
 ```python
 digest = dev_confirmation_digest(artifact, manifest, dev_input, dev_outcomes)
 self.assertRaises(LockedEvaluationError, ledger.reserve, digest, metadata)
 ```
 
-- [ ] Run `PYTHONPATH=src python -m unittest tests.promptbudget.test_locked_eval -v`; expect the v2.1 Dev digest function to be absent.
-- [ ] Add an explicit `--exploratory-dev-confirmation` entry point that only accepts a v2.1 artifact, reserves the key before reading/scoring outcomes, checks artifact/manifest hashes before and after, appends the observed-split label and reservation id, and never writes an artifact. Reuse the existing SQLite append-only ledger.
-- [ ] Document the exact Train and single Dev commands, build-only output root, and that Dev cannot alter any claim.
+- [ ] Run `PYTHONPATH=src python -m unittest tests.promptbudget.test_calibrate_policy_v2 -v`; expect missing grid helper failures.
+- [ ] Add a public-Dev calibration command that writes a new artifact and report and can be rerun as policy development continues.
+- [ ] Document the exact Train and repeated Dev commands, build-only output root, and that Dev outcomes can never become runtime features or Train targets.
 - [ ] Re-run the focused test; expect `OK`.
-- [ ] Commit `feat: add one-time PromptBudget v2.1 Dev confirmation`.
+- [ ] Commit `feat: calibrate PromptBudget v2.1 policy on public Dev`.
 
 ### Task 6: Verify the full implementation
 

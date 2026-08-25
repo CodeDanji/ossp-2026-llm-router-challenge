@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright 2026 SK TELECOM CO., LTD.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Dev calibration must not weaken PromptBudget v2 Fast admission."""
+"""Public Dev calibration searches the complete permitted policy grid."""
 
 from __future__ import annotations
 
@@ -33,6 +33,21 @@ class CalibratePolicyV2Test(unittest.TestCase):
         self.assertEqual(1.0, fallback.min_gain_ax31)
         self.assertEqual(1.0, fallback.min_gain_think)
         self.assertEqual(1.0, fallback.max_relative_cost)
+
+    def test_public_dev_grid_varies_every_policy_knob(self) -> None:
+        candidates = calibrate_policy._policy_settings("balanced")
+        self.assertEqual(
+            len(calibrate_policy.LAMBDAS)
+            * len(calibrate_policy.MIN_GAINS)
+            * len(calibrate_policy.MAX_RELATIVE_COSTS)
+            * len(calibrate_policy.SAFETY_MULTIPLIERS),
+            len(candidates) - 1,
+        )
+        self.assertGreater(len({item.lambda_cost for item in candidates}), 1)
+        self.assertGreater(len({item.min_gain_ax31 for item in candidates}), 1)
+        self.assertGreater(len({item.max_relative_cost for item in candidates}), 1)
+        self.assertGreater(len({item.safety_multiplier for item in candidates}), 1)
+        self.assertIn(calibrate_policy._v1_all_light_fallback(), candidates)
 
 
 if __name__ == "__main__":

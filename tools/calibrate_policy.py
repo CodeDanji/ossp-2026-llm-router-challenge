@@ -32,7 +32,7 @@ from promptbudget.safety import FAST_MARGIN, aggregate_upper_cost_ratio, canonic
 
 LAMBDAS = (0.0, 0.01, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0)
 MIN_GAINS = (0.0, 0.01, 0.03, 0.05)
-SAFETY_MULTIPLIERS = (1.0, 1.1, 1.25)
+SAFETY_MULTIPLIERS = (0.25, 0.5, 0.75, 1.0)
 MAX_RELATIVE_COSTS = (2.0, 4.0, 10.0, 20.0)
 
 
@@ -79,10 +79,21 @@ def _select(predictions: Mapping[str, ModelPrediction], settings: TierSettings, 
     return min(candidates, key=lambda item: (-item.utility, item.c_upper, MODEL_IDS.index(item.model_id))).model_id
 
 
-def _safety_settings(frozen: TierSettings) -> Sequence[TierSettings]:
-    """Dev may calibrate only the operational safety multiplier, never structure."""
+def _policy_settings(tier: str) -> Sequence[TierSettings]:
+    """Return the public-Dev search grid for every tier policy parameter."""
 
-    return tuple(replace(frozen, safety_multiplier=value) for value in SAFETY_MULTIPLIERS)
+    if tier not in TIERS:
+        raise ValueError("unknown tier")
+    return (
+        *(
+            TierSettings(lambda_cost, min_gain, min_gain, safety_multiplier, max_relative_cost)
+            for lambda_cost in LAMBDAS
+            for min_gain in MIN_GAINS
+            for max_relative_cost in MAX_RELATIVE_COSTS
+            for safety_multiplier in SAFETY_MULTIPLIERS
+        ),
+        _v1_all_light_fallback(),
+    )
 
 
 def _v1_all_light_fallback() -> TierSettings:
@@ -140,7 +151,7 @@ def calibrate(args: argparse.Namespace) -> Mapping[str, object]:
     tier_reports: Dict[str, Mapping[str, object]] = {}
     for tier in TIERS:
         best = None
-        grid = _safety_settings(draft.tiers[tier])
+        grid = _policy_settings(tier)
         for settings in grid:
             decisions = tuple(_select(predictions, settings, policy.light_model_id) for predictions in base_predictions)
             candidate = dict(baseline)
@@ -149,10 +160,16 @@ def calibrate(args: argparse.Namespace) -> Mapping[str, object]:
             conformal_ratio, aggregate_ratio, upper_ratio = _upper_cost_bounds(
                 inputs, outcomes, base_predictions, decisions, settings, policy
             )
-            if not _is_tier_admissible(tier, upper_ratio, policy.tiers[tier].budget_multiplier):
+            actual_ratio = Decimal(str(scored["budget_ratio"]))
+            if not _is_tier_admissible(tier, actual_ratio, policy.tiers[tier].budget_multiplier):
                 continue
-            if best is None or settings.safety_multiplier < best[0].safety_multiplier:
-                best = (settings, {
+            rank = (
+                Decimal(str(scored["tier_points_total"])),
+                Decimal(str(settings.safety_multiplier)),
+                -actual_ratio,
+            )
+            if best is None or rank > best[0]:
+                best = (rank, settings, {
                     **scored,
                     "conformal_upper_cost_ratio": str(conformal_ratio),
                     "aggregate_upper_cost_ratio": str(aggregate_ratio),
@@ -162,14 +179,14 @@ def calibrate(args: argparse.Namespace) -> Mapping[str, object]:
             selected[tier] = _v1_all_light_fallback()
             tier_reports[tier] = {"fallback": "v1-all-light", "budget_ratio": None}
             continue
-        selected[tier] = best[0]
-        tier_reports[tier] = best[1]
-    artifact = replace(draft, tiers=selected, code_version="train-oof-dev-calibrated-v2")
+        selected[tier] = best[1]
+        tier_reports[tier] = best[2]
+    artifact = replace(draft, tiers=selected, code_version="train-heads-dev-policy-calibrated-v2.1")
     write_artifact(args.artifact, args.manifest, artifact)
     report = {
-        "report_type": "promptbudget-dev-calibration-certificate-v2",
-        "certificate_kind": "operational calibration, not independent generalization evaluation",
-        "frozen_structure": {
+        "report_type": "promptbudget-public-dev-policy-calibration-v2.1",
+        "certificate_kind": "public validation/tuning; not an independent generalization evaluation",
+        "train_frozen_structure": {
             "family": draft.family,
             "hash_dimension": draft.hash_dimension,
             "selected_sparse_features": draft.training_provenance.get("selected_sparse_feature_count"),
@@ -179,11 +196,11 @@ def calibrate(args: argparse.Namespace) -> Mapping[str, object]:
         "input_sha256": _file_sha256(args.input),
         "outcomes_sha256": _file_sha256(args.outcomes),
         "draft_artifact_sha256": _file_sha256(args.draft_artifact),
-        "candidate_count_per_tier": len(SAFETY_MULTIPLIERS),
+        "candidate_count_per_tier": len(_policy_settings(TIERS[0])),
         "policy_id": policy.policy_id,
         "tiers": {
             tier: {
-                "candidate_count": len(SAFETY_MULTIPLIERS),
+                "candidate_count": len(_policy_settings(tier)),
                 "settings": {
                     "lambda_cost": selected[tier].lambda_cost,
                     "min_gain_ax31": selected[tier].min_gain_ax31,
