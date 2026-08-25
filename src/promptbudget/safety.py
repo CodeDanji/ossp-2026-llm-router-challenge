@@ -173,6 +173,45 @@ def _quantile_higher(values: Sequence[float], quantile: float) -> float:
     return ordered[position]
 
 
+def prompt_length_bucket(character_count: int) -> str:
+    if isinstance(character_count, bool) or not isinstance(character_count, int) or character_count < 0:
+        raise ValueError("character count must be a non-negative integer")
+    return "short" if character_count <= 512 else "medium" if character_count <= 2048 else "long"
+
+
+def monetary_cost_multipliers(
+    *,
+    predicted: Sequence[float],
+    actual: Sequence[float],
+    character_counts: Sequence[int],
+    minimum_samples: int,
+    quantile: float,
+) -> Tuple[Mapping[str, float], Tuple[str, ...]]:
+    """Return fixed length-bucket monetary-cost multipliers and fallbacks."""
+
+    if not (len(predicted) == len(actual) == len(character_counts)) or not predicted:
+        raise ValueError("calibration rows must be non-empty and aligned")
+    if minimum_samples < 1 or not 0.0 < quantile <= 1.0:
+        raise ValueError("invalid calibration parameters")
+    buckets = {"short": [], "medium": [], "long": []}
+    ratios = []
+    for estimate, observed, character_count in zip(predicted, actual, character_counts):
+        estimate, observed = float(estimate), float(observed)
+        if not math.isfinite(estimate) or not math.isfinite(observed) or estimate <= 0.0 or observed <= 0.0:
+            raise ValueError("monetary costs must be finite and positive")
+        ratio = observed / estimate
+        ratios.append(ratio)
+        buckets[prompt_length_bucket(character_count)].append(ratio)
+    global_multiplier = _quantile_higher(ratios, quantile)
+    fallback = tuple(bucket for bucket in ("long", "medium", "short") if len(buckets[bucket]) < minimum_samples)
+    multipliers = {"global": global_multiplier}
+    multipliers.update({
+        bucket: global_multiplier if bucket in fallback else _quantile_higher(values, quantile)
+        for bucket, values in buckets.items()
+    })
+    return multipliers, fallback
+
+
 def bucketed_multipliers(
     *,
     predicted: Sequence[float],

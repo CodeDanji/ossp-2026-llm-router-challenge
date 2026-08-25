@@ -14,10 +14,32 @@ from promptbudget.safety import (
     choose_one_standard_error,
     grouped_folds,
     is_fast_admissible,
+    monetary_cost_multipliers,
 )
 
 
 class SafetyTest(unittest.TestCase):
+    def test_monetary_cost_calibration_uses_fixed_boundaries_and_global_fallback(self) -> None:
+        predicted = (1.0,) * 103
+        actual = (1.2,) * 100 + (2.0, 2.0, 3.0)
+        counts = (512,) * 100 + (513, 2048, 2049)
+        multipliers, fallback = monetary_cost_multipliers(
+            predicted=predicted,
+            actual=actual,
+            character_counts=counts,
+            minimum_samples=100,
+            quantile=0.99,
+        )
+        self.assertEqual(1.2, multipliers["short"])
+        self.assertEqual(multipliers["global"], multipliers["medium"])
+        self.assertEqual(multipliers["global"], multipliers["long"])
+        self.assertEqual(("long", "medium"), fallback)
+        with self.assertRaises(ValueError):
+            monetary_cost_multipliers(
+                predicted=(0.0,), actual=(1.0,), character_counts=(1,),
+                minimum_samples=100, quantile=0.99,
+            )
+
     def test_grouped_folds_never_split_a_content_group(self) -> None:
         groups = ("a", "b", "a", "c", "d", "e", "f", "g")
         for fold in grouped_folds(groups, folds=4, seed=17):
