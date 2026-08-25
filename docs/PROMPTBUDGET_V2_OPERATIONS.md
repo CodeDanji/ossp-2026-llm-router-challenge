@@ -13,7 +13,7 @@ ratio가 `<=1.15`여야 하며, 통과 후보가 없으면 all-Light fallback을
 
 ```console
 PYTHONPATH=src python3 tools/train_oof.py \
-  --input data/train/inputs-base.json \
+  --input data/materialized/train/inputs.json \
   --outcomes data/train/outcomes.json \
   --artifact build/promptbudget-v2.1/artifact.json \
   --manifest build/promptbudget-v2.1/manifest.json \
@@ -27,7 +27,7 @@ manifest, Dev input, Dev outcome digest 조합을 먼저 예약한다. 같은 �
 ```console
 PYTHONPATH=src python3 tools/evaluate_locked.py \
   --exploratory-dev-confirmation \
-  --input data/dev/inputs-base.json \
+  --input data/materialized/dev/inputs.json \
   --outcomes data/dev/outcomes.json \
   --artifact build/promptbudget-v2.1/artifact.json \
   --manifest build/promptbudget-v2.1/manifest.json \

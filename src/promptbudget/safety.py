@@ -189,7 +189,7 @@ def monetary_cost_multipliers(
 ) -> Tuple[Mapping[str, float], Tuple[str, ...]]:
     """Return fixed length-bucket monetary-cost multipliers and fallbacks."""
 
-    if not (len(predicted) == len(actual) == len(character_counts)) or not predicted:
+    if not (len(predicted) == len(actual) == len(character_counts)) or len(predicted) == 0:
         raise ValueError("calibration rows must be non-empty and aligned")
     if minimum_samples < 1 or not 0.0 < quantile <= 1.0:
         raise ValueError("invalid calibration parameters")

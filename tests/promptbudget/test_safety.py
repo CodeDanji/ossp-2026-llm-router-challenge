@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 import unittest
+import numpy as np
 
 from promptbudget.safety import (
     CandidateResult,
@@ -20,8 +21,8 @@ from promptbudget.safety import (
 
 class SafetyTest(unittest.TestCase):
     def test_monetary_cost_calibration_uses_fixed_boundaries_and_global_fallback(self) -> None:
-        predicted = (1.0,) * 103
-        actual = (1.2,) * 100 + (2.0, 2.0, 3.0)
+        predicted = np.asarray((1.0,) * 103)
+        actual = np.asarray((1.2,) * 100 + (2.0, 2.0, 3.0))
         counts = (512,) * 100 + (513, 2048, 2049)
         multipliers, fallback = monetary_cost_multipliers(
             predicted=predicted,
