@@ -39,6 +39,13 @@ def _validate(text: str, tier: str, artifact: PromptBudgetArtifact, policy: Rout
     return artifact.tiers[tier]
 
 
+def _cost_multiplier(text: str, artifact: PromptBudgetArtifact, model_id: str) -> Decimal:
+    if artifact.cost_calibration is None:
+        return Decimal(str(artifact.cost_residual_multipliers[model_id]))
+    bucket = "short" if len(text) <= 512 else "medium" if len(text) <= 2048 else "long"
+    return Decimal(str(artifact.cost_calibration[model_id].get(bucket, artifact.cost_calibration[model_id]["global"])))
+
+
 def predict_models(text: str, tier: str, artifact: PromptBudgetArtifact, routing_policy: RoutingPolicy) -> Mapping[str, ModelPrediction]:
     settings = _validate(text, tier, artifact, routing_policy)
     vector = extract_features(text, artifact.hash_dimension)
@@ -48,7 +55,7 @@ def predict_models(text: str, tier: str, artifact: PromptBudgetArtifact, routing
         quality = max(0.0, min(1.0, predict_head(artifact.quality_heads[model_id], vector)))
         output_tokens = _tokens(predict_head(artifact.output_heads[model_id], vector))
         rates = routing_policy.models[model_id]
-        residual = Decimal(str(artifact.cost_residual_multipliers[model_id]))
+        residual = _cost_multiplier(text, artifact, model_id)
         safety = Decimal(str(settings.safety_multiplier))
         unit = Decimal(routing_policy.token_unit)
         cost = (rates.fixed_cost + (rates.input_token_rate * Decimal(str(input_tokens)) + rates.output_token_rate * Decimal(str(output_tokens))) / unit) * residual * safety

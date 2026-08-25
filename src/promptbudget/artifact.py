@@ -15,7 +15,9 @@ from ossp_router.protocol import MODEL_IDS, TIERS
 
 ARTIFACT_TYPE = "promptbudget-router-v1"
 FORMAT_VERSION = 1
+V2_FORMAT_VERSION = 2
 _HASH_DIMENSIONS = (2**16, 2**18, 2**20)
+_CALIBRATION_BUCKETS = ("global", "short", "medium", "long")
 
 def _num(v, name, *, positive=False, minimum=None):
     if isinstance(v, bool) or not isinstance(v, Real) or not math.isfinite(float(v)):
@@ -68,6 +70,7 @@ class PromptBudgetArtifact:
     family: str
     code_version: str
     training_provenance: Mapping[str, object]
+    cost_calibration: Mapping[str, Mapping[str, float]] | None = None
     def __post_init__(self):
         if isinstance(self.hash_dimension, bool) or self.hash_dimension not in _HASH_DIMENSIONS: raise PromptBudgetError("hash_dimension is unsupported.")
         if tuple(self.dense_feature_names) != tuple(DENSE_FEATURE_NAMES): raise PromptBudgetError("dense_feature_names must match the feature schema.")
@@ -83,6 +86,11 @@ class PromptBudgetArtifact:
         validate_head(self.input_head)
         if set(self.cost_residual_multipliers) != set(MODEL_IDS): raise PromptBudgetError("residual multiplier keys are invalid.")
         for v in self.cost_residual_multipliers.values(): _num(v, "cost_residual_multiplier", positive=True)
+        if self.cost_calibration is not None:
+            if set(self.cost_calibration) != set(MODEL_IDS): raise PromptBudgetError("cost calibration keys are invalid.")
+            for values in self.cost_calibration.values():
+                if set(values) != set(_CALIBRATION_BUCKETS): raise PromptBudgetError("cost calibration buckets are invalid.")
+                for value in values.values(): _num(value, "cost calibration multiplier", positive=True)
         if set(self.tiers) != set(TIERS): raise PromptBudgetError("tier keys are invalid.")
 
 def _head_dict(h, hash_dimension=2**20):
@@ -94,7 +102,10 @@ def _head_dict(h, hash_dimension=2**20):
 def artifact_to_dict(a):
     if not isinstance(a, PromptBudgetArtifact): raise PromptBudgetError("artifact must be PromptBudgetArtifact.")
     headmap=lambda m:{k:_head_dict(m[k], a.hash_dimension) for k in MODEL_IDS}
-    return {"type":ARTIFACT_TYPE,"version":1,"hash_dimension":a.hash_dimension,"dense_feature_names":list(a.dense_feature_names),"policy_id":a.policy_id,"policy_sha256":a.policy_sha256,"quality_heads":headmap(a.quality_heads),"output_heads":headmap(a.output_heads),"input_head":_head_dict(a.input_head,a.hash_dimension),"cost_residual_multipliers":{k:_num(a.cost_residual_multipliers[k],k,positive=True) for k in MODEL_IDS},"tiers":{k:{"lambda_cost":a.tiers[k].lambda_cost,"min_gain_ax31":a.tiers[k].min_gain_ax31,"min_gain_think":a.tiers[k].min_gain_think,"safety_multiplier":a.tiers[k].safety_multiplier,"max_relative_cost":a.tiers[k].max_relative_cost} for k in TIERS},"family":a.family,"code_version":a.code_version,"training_provenance":dict(a.training_provenance)}
+    raw = {"type":ARTIFACT_TYPE,"version":V2_FORMAT_VERSION if a.cost_calibration is not None else FORMAT_VERSION,"hash_dimension":a.hash_dimension,"dense_feature_names":list(a.dense_feature_names),"policy_id":a.policy_id,"policy_sha256":a.policy_sha256,"quality_heads":headmap(a.quality_heads),"output_heads":headmap(a.output_heads),"input_head":_head_dict(a.input_head,a.hash_dimension),"cost_residual_multipliers":{k:_num(a.cost_residual_multipliers[k],k,positive=True) for k in MODEL_IDS},"tiers":{k:{"lambda_cost":a.tiers[k].lambda_cost,"min_gain_ax31":a.tiers[k].min_gain_ax31,"min_gain_think":a.tiers[k].min_gain_think,"safety_multiplier":a.tiers[k].safety_multiplier,"max_relative_cost":a.tiers[k].max_relative_cost} for k in TIERS},"family":a.family,"code_version":a.code_version,"training_provenance":dict(a.training_provenance)}
+    if a.cost_calibration is not None:
+        raw["cost_calibration"] = {model_id: {bucket: _num(a.cost_calibration[model_id][bucket], bucket, positive=True) for bucket in _CALIBRATION_BUCKETS} for model_id in MODEL_IDS}
+    return raw
 
 def _head(raw, dense_len, hash_dimension):
     if not isinstance(raw, Mapping) or set(raw) != {"intercept","dense_coefficients","sparse_coefficients"}: raise PromptBudgetError("invalid head fields")
@@ -113,11 +124,13 @@ def _head(raw, dense_len, hash_dimension):
 def parse_artifact(raw):
     if not isinstance(raw,Mapping): raise PromptBudgetError("artifact must be an object")
     expected={"type","version","hash_dimension","dense_feature_names","policy_id","policy_sha256","quality_heads","output_heads","input_head","cost_residual_multipliers","tiers","family","code_version","training_provenance"}
+    if raw.get("version") == V2_FORMAT_VERSION: expected.add("cost_calibration")
     if set(raw)!=expected: raise PromptBudgetError("artifact fields are invalid")
-    if raw["type"] != ARTIFACT_TYPE or raw["version"] != FORMAT_VERSION: raise PromptBudgetError("artifact type or version is invalid")
+    if raw["type"] != ARTIFACT_TYPE or raw["version"] not in (FORMAT_VERSION, V2_FORMAT_VERSION): raise PromptBudgetError("artifact type or version is invalid")
     try:
         dim = raw["hash_dimension"]; n = len(DENSE_FEATURE_NAMES)
-        return PromptBudgetArtifact(dim,tuple(raw["dense_feature_names"]),raw["policy_id"],raw["policy_sha256"],{k:_head(raw["quality_heads"][k],n,dim) for k in MODEL_IDS},{k:_head(raw["output_heads"][k],n,dim) for k in MODEL_IDS},_head(raw["input_head"],n,dim),{k:_num(raw["cost_residual_multipliers"][k],k,positive=True) for k in MODEL_IDS},{k:TierSettings(**raw["tiers"][k]) for k in TIERS},raw["family"],raw["code_version"],raw["training_provenance"])
+        calibration = None if raw["version"] == FORMAT_VERSION else {model_id: {bucket: _num(raw["cost_calibration"][model_id][bucket], bucket, positive=True) for bucket in _CALIBRATION_BUCKETS} for model_id in MODEL_IDS}
+        return PromptBudgetArtifact(dim,tuple(raw["dense_feature_names"]),raw["policy_id"],raw["policy_sha256"],{k:_head(raw["quality_heads"][k],n,dim) for k in MODEL_IDS},{k:_head(raw["output_heads"][k],n,dim) for k in MODEL_IDS},_head(raw["input_head"],n,dim),{k:_num(raw["cost_residual_multipliers"][k],k,positive=True) for k in MODEL_IDS},{k:TierSettings(**raw["tiers"][k]) for k in TIERS},raw["family"],raw["code_version"],raw["training_provenance"],calibration)
     except (KeyError,TypeError,ValueError) as e: raise PromptBudgetError("invalid artifact") from e
 
 def _bytes(a): return (json.dumps(artifact_to_dict(a),sort_keys=True,separators=(",",":"),ensure_ascii=False,allow_nan=False)+"\n").encode()
@@ -126,7 +139,7 @@ def write_artifact(path, manifest, artifact):
     path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write(path, data)
     digest=hashlib.sha256(data).hexdigest()
-    manifest_data=(json.dumps({"artifact_file":path.name,"artifact_sha256":digest,"format_version":1},sort_keys=True,separators=(",",":"))+"\n").encode()
+    manifest_data=(json.dumps({"artifact_file":path.name,"artifact_sha256":digest,"format_version":artifact_to_dict(artifact)["version"]},sort_keys=True,separators=(",",":"))+"\n").encode()
     manifest.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write(manifest, manifest_data)
 
@@ -141,9 +154,10 @@ def load_artifact(path, manifest):
     path,manifest=Path(path),Path(manifest)
     try: m=json.loads(manifest.read_text(encoding="utf-8")); data=path.read_bytes()
     except Exception as e: raise PromptBudgetError("manifest or artifact could not be read") from e
-    if not isinstance(m,dict) or set(m)!={"artifact_file","artifact_sha256","format_version"} or m["artifact_file"]!=path.name or m["format_version"]!=1 or m["artifact_sha256"]!=hashlib.sha256(data).hexdigest(): raise PromptBudgetError("manifest does not match artifact")
+    if not isinstance(m,dict) or set(m)!={"artifact_file","artifact_sha256","format_version"} or m["artifact_file"]!=path.name or m["format_version"] not in (FORMAT_VERSION, V2_FORMAT_VERSION) or m["artifact_sha256"]!=hashlib.sha256(data).hexdigest(): raise PromptBudgetError("manifest does not match artifact")
     try:
         artifact = parse_artifact(json.loads(data.decode("utf-8")))
+        if artifact_to_dict(artifact)["version"] != m["format_version"]: raise PromptBudgetError("manifest format version does not match artifact")
         if _bytes(artifact) != data: raise PromptBudgetError("artifact is not canonical")
         return artifact
     except Exception as e: raise PromptBudgetError("artifact is invalid") from e

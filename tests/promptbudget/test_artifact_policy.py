@@ -31,6 +31,7 @@ def _artifact(
     *,
     qualities: tuple[float, float, float] = (0.5, 0.6, 0.7),
     tiers: dict[str, TierSettings] | None = None,
+    cost_calibration: dict[str, dict[str, float]] | None = None,
 ) -> PromptBudgetArtifact:
     policy = load_bundled_policy()
     model_ids = tuple(policy.models)
@@ -54,10 +55,42 @@ def _artifact(
         family="absolute-linear",
         code_version="test",
         training_provenance={"source": "test"},
+        cost_calibration=cost_calibration,
     )
 
 
 class ArtifactPolicyTest(unittest.TestCase):
+    def test_v2_cost_calibration_uses_length_buckets_and_keeps_v1_compatible(self) -> None:
+        routing_policy = load_bundled_policy()
+        model_ids = tuple(routing_policy.models)
+        calibration = {
+            model_id: {"global": 1.5, "short": 1.1, "medium": 1.2, "long": 1.3}
+            for model_id in model_ids
+        }
+        v2 = _artifact(cost_calibration=calibration)
+        v1 = _artifact()
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            v2_path, v2_manifest = root / "v2.json", root / "v2.manifest.json"
+            v1_path, v1_manifest = root / "v1.json", root / "v1.manifest.json"
+            write_artifact(v2_path, v2_manifest, v2)
+            write_artifact(v1_path, v1_manifest, v1)
+            loaded_v2 = load_artifact(v2_path, v2_manifest)
+            loaded_v1 = load_artifact(v1_path, v1_manifest)
+            self.assertIn('"format_version":2', v2_manifest.read_text(encoding="utf-8"))
+            self.assertIn('"format_version":1', v1_manifest.read_text(encoding="utf-8"))
+
+        short = predict_models("x" * 512, "balanced", loaded_v2, routing_policy)["ax31"]
+        medium = predict_models("x" * 513, "balanced", loaded_v2, routing_policy)["ax31"]
+        long = predict_models("x" * 2049, "balanced", loaded_v2, routing_policy)["ax31"]
+        legacy = predict_models("x" * 512, "balanced", loaded_v1, routing_policy)["ax31"]
+        self.assertEqual(v2, loaded_v2)
+        self.assertEqual(v1, loaded_v1)
+        self.assertAlmostEqual(1.1, short.c_upper / legacy.c_upper)
+        self.assertAlmostEqual(1.2, medium.c_upper / legacy.c_upper)
+        self.assertAlmostEqual(1.3, long.c_upper / legacy.c_upper)
+
     def test_round_trip_uses_bundled_policy_and_actual_text_features(self) -> None:
         routing_policy = load_bundled_policy()
         artifact = _artifact()
