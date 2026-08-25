@@ -205,6 +205,25 @@ def _fit_ridge(matrix: Any, targets: Any, alpha: float) -> Tuple[Any, Any]:
     return intercept, raw_coefficients
 
 
+def fit_ridge_alphas(matrix: Any, targets: Any, alphas: Sequence[float]) -> Mapping[float, Tuple[Any, Any]]:
+    """Solve several ridge penalties from one standardized SVD."""
+
+    mean = matrix.mean(axis=0)
+    scale = matrix.std(axis=0)
+    scale = np.where(scale > 1e-12, scale, 1.0)
+    standardized = (matrix - mean) / scale
+    target_mean = targets.mean(axis=0)
+    centered = targets - target_mean
+    left, singular_values, right = np.linalg.svd(standardized, full_matrices=False)
+    projected = left.T @ centered
+    result = {}
+    for alpha in sorted(set(alphas)):
+        coefficients = right.T @ ((singular_values / (singular_values * singular_values + alpha))[:, None] * projected)
+        raw_coefficients = coefficients / scale[:, None]
+        result[alpha] = (target_mean - mean @ raw_coefficients, raw_coefficients)
+    return result
+
+
 def _predict(matrix: Any, intercept: Any, coefficients: Any) -> Any:
     return matrix @ coefficients + intercept
 
@@ -246,10 +265,11 @@ def fit_predict_specs(
         [feature_count for feature_count, _alpha in specs],
     )
     result = {}
-    for feature_count, alpha in specs:
+    for feature_count in sorted({feature_count for feature_count, _alpha in specs}):
         train_matrix, predict_matrix, selected = prepared[feature_count]
-        intercept, coefficients = _fit_ridge(train_matrix, targets[list(train_indices)], alpha)
-        result[(feature_count, alpha)] = (_predict(predict_matrix, intercept, coefficients), selected, intercept, coefficients)
+        matching = [alpha for count, alpha in specs if count == feature_count]
+        for alpha, (intercept, coefficients) in fit_ridge_alphas(train_matrix, targets[list(train_indices)], matching).items():
+            result[(feature_count, alpha)] = (_predict(predict_matrix, intercept, coefficients), selected, intercept, coefficients)
     return result
 
 

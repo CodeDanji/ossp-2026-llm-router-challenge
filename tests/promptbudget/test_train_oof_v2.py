@@ -24,6 +24,14 @@ SPEC.loader.exec_module(train_oof)
 
 
 class TrainOofV2Test(unittest.TestCase):
+    def test_ridge_alpha_batch_matches_individual_ridge_predictions(self) -> None:
+        matrix = np.asarray(((0.0, 1.0), (1.0, 0.0), (2.0, 1.0), (3.0, 0.0)), dtype=np.float64)
+        targets = np.asarray(((0.0,), (1.0,), (2.0,), (3.0,)), dtype=np.float64)
+        for alpha, (intercept, coefficients) in train_oof.fit_ridge_alphas(matrix, targets, (1.0, 10.0)).items():
+            expected_intercept, expected_coefficients = train_oof._fit_ridge(matrix, targets, alpha)
+            self.assertTrue(np.allclose(intercept, expected_intercept))
+            self.assertTrue(np.allclose(coefficients, expected_coefficients))
+
     def test_batch_fit_predicts_each_alpha_from_one_feature_preparation(self) -> None:
         dense = np.zeros((5, 2), dtype=np.float64)
         sparse = ({0: 1.0}, {1: 1.0}, {0: 1.0}, {1: 1.0}, {0: 1.0})
