@@ -14,12 +14,23 @@ import unittest
 from promptbudget.locked_eval import (
     AppendOnlyLedger,
     LockedEvaluationError,
+    dev_confirmation_digest,
     holdout_digest,
     require_reservation,
 )
 
 
 class LockedEvaluationTest(unittest.TestCase):
+    def test_dev_confirmation_digest_binds_artifact_manifest_and_observed_split(self) -> None:
+        first = dev_confirmation_digest(b"artifact-a", b"manifest-a", b"dev-input", b"dev-outcome")
+        self.assertNotEqual(first, dev_confirmation_digest(b"artifact-b", b"manifest-a", b"dev-input", b"dev-outcome"))
+        self.assertNotEqual(first, dev_confirmation_digest(b"artifact-a", b"manifest-b", b"dev-input", b"dev-outcome"))
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = AppendOnlyLedger(Path(directory) / "ledger.sqlite")
+            ledger.reserve(first, {"observed_split": True})
+            with self.assertRaisesRegex(LockedEvaluationError, "already reserved"):
+                ledger.reserve(first, {"observed_split": True})
+
     def test_digest_is_domain_separated_and_order_independent_for_manifest(self) -> None:
         first = holdout_digest(
             b"input", b"outcome", 1, (("group-b", 2), ("group-a", 1))

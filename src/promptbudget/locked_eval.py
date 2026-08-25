@@ -50,6 +50,18 @@ def holdout_digest(
     return hashlib.sha256(_canonical_json(payload)).hexdigest()
 
 
+def dev_confirmation_digest(artifact_bytes: bytes, manifest_bytes: bytes, input_bytes: bytes, outcome_bytes: bytes) -> str:
+    """Bind one exploratory Dev confirmation to its immutable four inputs."""
+
+    return hashlib.sha256(_canonical_json({
+        "domain": "promptbudget/exploratory-dev-confirmation/v2.1",
+        "artifact_sha256": hashlib.sha256(artifact_bytes).hexdigest(),
+        "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "input_sha256": hashlib.sha256(input_bytes).hexdigest(),
+        "outcome_sha256": hashlib.sha256(outcome_bytes).hexdigest(),
+    })).hexdigest()
+
+
 class AppendOnlyLedger:
     """SQLite event ledger whose public mutation API only appends events."""
 
