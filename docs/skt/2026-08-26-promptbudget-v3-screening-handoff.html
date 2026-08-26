@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PromptBudget v3 인수인계 — Dev screening No-Go</title>
+  <style>
+    :root { color-scheme: light dark; --ink: #182230; --muted: #546273; --line: #d8dee8; --panel: #f7f9fc; --bad: #a52828; --good: #137333; --warn: #9b5b00; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #eef2f7; color: var(--ink); font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    main { max-width: 1040px; margin: 32px auto; padding: 40px; background: white; box-shadow: 0 3px 18px #172a4622; }
+    h1, h2, h3 { line-height: 1.25; margin: 1.5em 0 .55em; }
+    h1 { margin-top: 0; font-size: 2rem; } h2 { font-size: 1.35rem; border-bottom: 1px solid var(--line); padding-bottom: .35em; } h3 { font-size: 1.05rem; }
+    p, li { max-width: 90ch; } a { color: #0b57d0; } code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    code { background: #eef2f7; padding: .12em .3em; border-radius: 3px; overflow-wrap: anywhere; }
+    pre { white-space: pre-wrap; background: #111827; color: #e7edf6; padding: 16px; border-radius: 7px; overflow-wrap: anywhere; }
+    .status { padding: 16px 18px; border-left: 5px solid var(--bad); background: #fff0f0; } .status strong { color: var(--bad); }
+    .note { padding: 14px 18px; border-left: 5px solid #d08a00; background: #fff8e8; }
+    .ok { color: var(--good); font-weight: 700; } .bad { color: var(--bad); font-weight: 700; } .muted { color: var(--muted); }
+    table { width: 100%; border-collapse: collapse; margin: .8em 0 1.2em; font-variant-numeric: tabular-nums; }
+    th, td { border: 1px solid var(--line); padding: .55em .65em; text-align: left; vertical-align: top; }
+    th { background: var(--panel); } td.num { text-align: right; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+    .card { border: 1px solid var(--line); background: var(--panel); padding: 14px 16px; border-radius: 7px; }
+    @media (prefers-color-scheme: dark) { body { background: #111827; } main { background: #182230; } :root { --ink: #e7edf6; --muted: #b1bdcb; --line: #3d4a5e; --panel: #222d3e; } code { background: #222d3e; } .status { background: #44272a; } .note { background: #44381f; } a { color: #8ab4f8; } }
+    @media print { body { background: white; } main { margin: 0; max-width: none; box-shadow: none; padding: 0; } a { color: inherit; text-decoration: none; } }
+  </style>
+</head>
+<body>
+<main>
+  <h1>PromptBudget v3 delta-utility 인수인계</h1>
+  <p class="muted">작성일: 2026-08-26 · 대상: 다음 구현 세션/작업자 · 기준 브랜치: <code>codex/promptbudget-v3</code></p>
+
+  <section class="status">
+    <strong>현재 판정: screening No-Go.</strong> v3는 공개 Dev 880에서 bundled v2.1보다 최종 가중 점수가 0.050767 낮았다. 이는 <em>정식 Train Go/No-Go</em>가 아니라, 정식 nested-CV에 추가 계산비용을 쓰지 말아야 한다는 비구속적 중단 신호다. 현재 구현은 연구용 부분 구현이며 v3 설계서의 정식 평가 요구를 충족하지 않는다.
+  </section>
+
+  <h2>0. 다음 대화에서 바로 시작하는 법</h2>
+  <div class="note">
+    <p><strong>첫 번째로 이 HTML을 읽고, 다음 설계서를 이어서 읽는다.</strong></p>
+    <p><code>docs/superpowers/specs/2026-08-26-promptbudget-v3-nested-evaluation-design.md</code></p>
+    <p>현재 승인된 방향은 “v3 성능 개선”이 아니라 <strong>Train nested evaluation 정정</strong>이다. 상세 구현 계획은 아직 작성 전이므로, 다음 작업자는 설계서 검토 승인 여부를 먼저 확인한 뒤에만 plan을 작성한다. full 3×5 evaluation, Dev 재보정, final artifact refit, 기본 artifact 변경, merge/push는 실행하지 않는다.</p>
+    <p>새 대화에 아래 문장을 그대로 붙여 넣으면 충분하다.</p>
+    <pre>PromptBudget v3 작업을 재개한다. 먼저 docs/skt/2026-08-26-promptbudget-v3-screening-handoff.html 및 docs/superpowers/specs/2026-08-26-promptbudget-v3-nested-evaluation-design.md를 읽고, 설계서의 범위 안에서 상세 구현 계획만 작성해 줘. 구현이나 full nested-CV 실행은 하지 마.</pre>
+  </div>
+
+  <h2>1. 다음 세션의 즉시 지시</h2>
+  <ol>
+    <li><strong>지금 상태로 full nested-CV를 실행하지 않는다.</strong> Dev screening이 명백히 부정적이고, trainer 자체도 설계서의 nested 정책 평가를 아직 구현하지 않았다.</li>
+    <li>사용자가 v3 연구 재개를 명시적으로 승인하면, 먼저 아래 “정식 설계와의 차이”를 줄이는 작은 설계/구현 작업을 한다. 그 뒤에만 Train outer 평가를 실행한다.</li>
+    <li>기본 배포 artifact <code>src/promptbudget/resources/artifact.json</code>와 manifest는 절대 바꾸지 않는다. v3는 계속 <code>build/promptbudget-v3/</code> 아래의 research artifact여야 한다.</li>
+    <li>사용자가 단순히 제출 성능을 원한다면 v2.1을 유지한다. 현재 evidence에서는 v3를 v2.1 대체 후보로 승격할 근거가 없다.</li>
+  </ol>
+
+  <h2>2. 대회와 프로젝트 맥락</h2>
+  <p>이 작업은 <a href="https://github.com/sktelecom/ossp-2026-llm-router-challenge">SKT OSSP 2026 LLM Router Challenge</a>의 PromptBudget 라우터 연구다. runtime은 prompt와 tier만으로 모델 ID 하나를 결정해야 하며, 실제 outcome·비용·ID·split·순서·네트워크를 사용할 수 없다. 공개 Train/Dev의 score/token/cost는 학습·검증에만 쓴다. tier 예산은 선택된 실제 비용으로 판정된다.</p>
+  <table>
+    <thead><tr><th>단계</th><th>핵심 흐름과 관찰</th></tr></thead>
+    <tbody>
+      <tr><td>v1</td><td>all-Light 안전 baseline. 비용은 안전하지만 upgrade 품질 기회를 쓰지 못함.</td></tr>
+      <tr><td>v2</td><td>모델별 absolute quality를 예측해 차감. 상대 이득과 비용 위험을 과대평가하는 문제가 관찰됨.</td></tr>
+      <tr><td>v2.1</td><td>OOF monetary cost calibration과 공개 Dev policy calibration을 추가. 기본 shipped artifact는 <code>absolute-linear</code> v2.1이며 Dev weighted score는 0.670085227273.</td></tr>
+      <tr><td>v3 설계</td><td>Light 기준 <code>delta_quality</code>, <code>p_win</code>, <code>incremental_relative_cost</code>를 별도 head로 학습하고, Train grouped nested-CV를 통과한 경우에만 Dev calibration으로 가는 research-only 후보를 정의.</td></tr>
+      <tr><td>이번 세션</td><td>v3 schema/runtime/train skeleton을 추가하고 실제 Train artifact와 Dev 880 screening을 실행. v3가 거의 all-Light로 붕괴해 v2.1보다 낮은 점수를 냄.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>3. 합의된 의도와 의사결정</h2>
+  <ul>
+    <li>사용자 요청: 서브에이전트는 보수적으로 활용하고, 테스트를 과도하게 늘리지 않는다.</li>
+    <li>v3는 배포 승격이 아닌 research-only <code>delta-linear</code> artifact다. v1/v2 loader 및 기본 resources의 호환성은 유지한다.</li>
+    <li>공개 Dev 880은 “실제 결과를 보는 screening”에는 쓰되, formal Go/No-Go의 근거로 쓰지 않는다.</li>
+    <li>합의한 순서: Windows 출력 문제 해결 → Dev v3 점수 확인 → 같은 조건의 v2.1/v3 비교 → 결과가 유망할 때만 full nested-CV 투자.</li>
+    <li>screening이 부정적이므로 마지막 조건은 충족되지 않았다. full nested-CV는 <strong>의도적으로 미실행</strong>이다.</li>
+  </ul>
+
+  <h2>4. 실제 실행 결과</h2>
+  <h3>4.1 Dev 880 self-check: 같은 입력·outcome·정책</h3>
+  <table>
+    <thead><tr><th>tier</th><th class="num">v3 score</th><th class="num">bundled v2.1 score</th><th class="num">v3 − v2.1</th><th>v3 선택 분포</th></tr></thead>
+    <tbody>
+      <tr><td>Fast</td><td class="num">0.619318181818</td><td class="num">0.619886363636</td><td class="num bad">−0.000568181818</td><td>Light 878, ax31 0, Think 2</td></tr>
+      <tr><td>Balanced</td><td class="num">0.619318181818</td><td class="num">0.691477272727</td><td class="num bad">−0.072159090909</td><td>Light 878, ax31 0, Think 2</td></tr>
+      <tr><td>Premium</td><td class="num">0.619318181818</td><td class="num">0.715625000000</td><td class="num bad">−0.096306818182</td><td>Light 878, ax31 0, Think 2</td></tr>
+      <tr><th>weighted final</th><th class="num">0.619318181818</th><th class="num">0.670085227273</th><th class="num bad">−0.050767045455</th><th>세 tier가 동일하게 수렴</th></tr>
+    </tbody>
+  </table>
+  <p>v3의 actual cost는 각 tier에서 4.83381855 credits, Light baseline 대비 1.103251850766배로 예산은 통과했지만, 고비용 모델을 거의 선택하지 않아 tier 차이를 전혀 활용하지 못했다. v2.1은 Fast/Balance/Premium에서 서로 다른 route와 score를 냈다.</p>
+
+  <h3>4.2 Train research artifact</h3>
+  <div class="grid">
+    <div class="card"><strong>artifact</strong><br><code>delta-linear</code>, format v3<br>SHA-256: <code>c7c48b5e…dc2673</code></div>
+    <div class="card"><strong>rows</strong><br>public Train 1,760<br>grouped outer schedule: 3 seeds × 5 folds</div>
+    <div class="card"><strong>report status</strong><br><span class="bad">no-go</span> — “Train-only until grouped nested-CV policy admission is reported”</div>
+  </div>
+  <p>이 report의 <code>no-go</code>는 실제 policy admission 결과가 아니라, 정식 평가가 아직 없음을 표시하는 guard다. 이를 정식 no-go evidence로 오해하면 안 된다.</p>
+
+  <h2>5. Windows 출력 문제: 원인과 수정</h2>
+  <p>두 가지가 섞여 있었다.</p>
+  <ol>
+    <li><strong>실제 코드 결함, 수정 완료:</strong> README에 제시된 <code>PYTHONPATH=src python -m promptbudget.runtime …</code>는 module import만 하고 <code>main()</code>을 실행하지 않았다. <code>src/promptbudget/runtime.py</code>에 <code>if __name__ == "__main__": raise SystemExit(main())</code>를 추가했고, <code>--help</code> subprocess 회귀 테스트를 추가했다.</li>
+    <li><strong>로컬 Windows 환경 특성:</strong> worktree의 <code>build/promptbudget-v3</code> 경로가 ReadOnly 속성을 상속해 output 생성에 부적합했다. screening output은 existing writable parent인 <code>C:\tmp\promptbudget-v3-dev-screening</code>에 썼다. runtime의 “output parent는 사전에 존재해야 한다” 계약은 바꾸지 않았다.</li>
+  </ol>
+
+  <h2>6. 현재 변경 사항과 상태</h2>
+  <table>
+    <thead><tr><th>영역</th><th>변경/의도</th><th>상태</th></tr></thead>
+    <tbody>
+      <tr><td>artifact</td><td><code>DeltaLinearArtifact</code>, <code>DeltaTierSettings</code>, v3 manifest/load validation</td><td>부분 구현, v1/v2 호환 테스트 통과</td></tr>
+      <tr><td>runtime policy</td><td>delta/p-win/incremental-cost gate와 deterministic tie-break</td><td>부분 구현, gate 테스트 통과</td></tr>
+      <tr><td>runtime entry</td><td><code>python -m promptbudget.runtime</code>가 <code>main()</code> 실행</td><td class="ok">수정·검증 완료</td></tr>
+      <tr><td>Train tool</td><td><code>tools/train_delta.py</code> 및 residual helper</td><td>실험용 skeleton; 정식 nested policy evaluation 아님</td></tr>
+      <tr><td>Dev tool</td><td><code>tools/calibrate_delta_policy.py</code></td><td>초안; Train Go 조건 enforcement 부족. screening no-go라 실행/완성 대상 아님</td></tr>
+      <tr><td>기본 artifact</td><td><code>src/promptbudget/resources/artifact.json</code></td><td class="ok">변경하지 않음</td></tr>
+    </tbody>
+  </table>
+
+  <h2>7. 정식 v3 설계와의 결정적 차이</h2>
+  <div class="note"><strong>이 항목들이 해결되기 전에는 v3 artifact를 평가 후보 또는 shipped artifact로 취급하지 않는다.</strong></div>
+  <ol>
+    <li><strong>진짜 outer policy evaluation 부재:</strong> 현재 outer loop는 각 outer-train의 head spec 선택 이력만 기록한다. 선택된 policy를 outer-test에 적용해 actual cost/score/upgrade 결과를 측정하지 않는다.</li>
+    <li><strong>비용 calibration 누수:</strong> final residual offset은 cross-fit residual이 아니라 in-sample prediction residual 기반이다. v3 설계가 요구한 0.90/0.95/0.99 quantile 선택도 구현되지 않았고 0.95가 고정돼 있다.</li>
+    <li><strong>inner selection의 근사:</strong> 비용 때문에 inner selection은 dense-only ridge surrogate를 사용한다. sparse-feature grid 의미가 바뀌며, win-probability selection도 model별 target이 아닌 제한된 target을 이용한다.</li>
+    <li><strong>정식 지표/판정 부재:</strong> required signal table, 비용 coverage/slack, tier policy comparison, content-group bootstrap CI, v2.1 대비 actual-cost admission이 없다. 따라서 report의 <code>go_no_go</code>는 evidence 기반 결론이 아니다.</li>
+    <li><strong>관측된 정책 붕괴:</strong> 0.95 residual offset이 큰 값으로 형성되어 cost gate가 upgrade를 막는다. 이것은 수정 전 반드시 진단해야 할 모델/보정 문제이며, 단순 tier knob 완화로 우회하면 안전 주장만 약화된다.</li>
+  </ol>
+
+  <h2>8. 재현 절차</h2>
+  <p>작업 디렉터리:</p>
+  <pre>C:\Users\alvin\바탕 화면\창프\오픈소스\router-repo\.worktrees\promptbudget-v3</pre>
+  <p>NumPy가 있는 bundled Python:</p>
+  <pre>C:\Users\alvin\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe</pre>
+  <p>데이터 materialization용 <code>.venv-data</code>는 현재 NumPy 없는 runtime을 가리키므로 train/test에 쓰지 않는다. materialization만 다음으로 이미 완료했다.</p>
+  <pre>.venv-data\Scripts\python.exe tools\materialize_public_data.py --split train --split dev</pre>
+  <p>현재 artifact 재생성 명령(참고용; 결과가 negative이므로 반복 실행 권장하지 않음):</p>
+  <pre>$env:PYTHONPATH = (Join-Path (Get-Location) 'src')
+$py = 'C:\Users\alvin\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe'
+&amp; $py tools\train_delta.py --input data\materialized\train\inputs.json --outcomes data\train\outcomes.json --artifact build\promptbudget-v3\artifact.json --manifest build\promptbudget-v3\manifest.json --report build\promptbudget-v3\train-nested-cv.json --max-sparse-features 16</pre>
+  <p>Dev output 및 score 재현에는 existing writable parent를 쓴다. runtime tier 값은 반드시 lowercase다.</p>
+  <pre>$env:PYTHONPATH = (Join-Path (Get-Location) 'src')
+$py = 'C:\Users\alvin\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe'
+$out = 'C:\tmp\promptbudget-v3-dev-screening'
+New-Item -ItemType Directory -Force -Path "$out\v3", "$out\v21" | Out-Null
+foreach ($tier in 'fast','balanced','premium') {
+  &amp; $py -m promptbudget.runtime --artifact build\promptbudget-v3\artifact.json --manifest build\promptbudget-v3\manifest.json --input data\materialized\dev\inputs.json --tier $tier --output "$out\v3\$tier.json"
+  &amp; $py -m promptbudget.runtime --input data\materialized\dev\inputs.json --tier $tier --output "$out\v21\$tier.json"
+}
+&amp; $py -m ossp_router.cli self-check --input data\materialized\dev\inputs.json --outcomes data\dev\outcomes.json --submissions "$out\v3" --report "$out\v3-score.json"
+&amp; $py -m ossp_router.cli self-check --input data\materialized\dev\inputs.json --outcomes data\dev\outcomes.json --submissions "$out\v21" --report "$out\v21-score.json"</pre>
+
+  <h2>9. 검증과 Git 상태</h2>
+  <ul>
+    <li><span class="ok">통과:</span> bundled Python으로 <code>python -m unittest discover -s tests\promptbudget -v</code> — 47 tests.</li>
+    <li><span class="ok">통과:</span> v3 scripts/runtime <code>py_compile</code>, <code>git diff --check</code>.</li>
+    <li><span class="ok">통과:</span> 실제 v3/v2.1 Dev 880 submission generation 및 <code>self-check</code>.</li>
+    <li><strong>Git:</strong> worktree branch <code>codex/promptbudget-v3</code>; base checkout branch <code>main</code>. 이번 research changes는 아직 commit, merge, push하지 않았다. base <code>main</code>은 clean으로 확인됐다.</li>
+    <li><strong>변경 파일:</strong> <code>artifact.py</code>, <code>policy.py</code>, <code>runtime.py</code>, <code>safety.py</code>, PromptBudget tests, <code>tools/train_delta.py</code>, <code>tools/calibrate_delta_policy.py</code>, 운영 문서 및 v3 계획 문서.</li>
+  </ul>
+
+  <h2>10. 다음 작업자가 시작할 때 읽을 파일</h2>
+  <ol>
+    <li><code>docs/superpowers/specs/2026-08-25-promptbudget-v3-delta-utility-design.md</code> — 승인된 목표·경계·formal Go/No-Go.</li>
+    <li><code>docs/superpowers/plans/2026-08-25-promptbudget-v3-delta-utility.md</code> — 기존 구현 계획. 체크박스가 실제 완료를 보장하지 않으므로 이 handoff의 section 7과 함께 읽는다.</li>
+    <li><code>build/promptbudget-v3/train-nested-cv.json</code> — 현재 Train-only artifact provenance.</li>
+    <li><code>docs/PROMPTBUDGET_V2_OPERATIONS.md</code> 및 <code>docs/skt/2026-08-25-promptbudget-v2.1-implementation-handoff.md</code> — shipped v2.1의 경계와 재현 이력.</li>
+    <li><code>src/promptbudget/artifact.py</code>, <code>policy.py</code>, <code>safety.py</code>, <code>tools/train_delta.py</code> — 구현 현실 점검.</li>
+  </ol>
+
+  <h2>11. 경로 정합성</h2>
+  <table>
+    <thead><tr><th>구분</th><th>값</th><th>의미</th></tr></thead>
+    <tbody>
+      <tr><td>사용자에게 보이는 screening 결과</td><td><code>C:\tmp\promptbudget-v3-dev-screening\v3-score.json</code>, <code>v21-score.json</code></td><td>임시 결과. source control 대상 아님.</td></tr>
+      <tr><td>연구 runtime/artifact 경로</td><td><code>…\router-repo\.worktrees\promptbudget-v3\src</code> 및 <code>build\promptbudget-v3</code></td><td>v3 worktree 전용. default resource는 미변경.</td></tr>
+      <tr><td>원격 반영</td><td>없음</td><td>commit/push/merge하지 않음. negative screening 및 formal 미완료 때문에 의도적 보류.</td></tr>
+    </tbody>
+  </table>
+</main>
+</body>
+</html>
