@@ -46,8 +46,30 @@ evaluation constant, not a CLI option.
 | `tests/test_evaluate_hash_regex_quality_nested.py` | CLI guardrails, no-write dry-run, and report schema smoke tests. |
 | `tests/test_hash_regex_baseline.py` | Existing runtime/parser/permutation regression; append only artifact compatibility coverage after a candidate is frozen. |
 | `tools/train_hash_regex_quality_final.py` | **Post-winner only.** Train-only finalization from a locked report configuration into a build artifact using the existing `HashRegexArtifact` schema. |
+| `tools/score_hash_regex_artifact.py` | Frozen-artifact Dev sanity scorer. Builds every tier submission and calls the official scorer; it never fits, calibrates, or rewrites an artifact. |
 
 The legacy `baselines/train_hash_regex.py` is deliberately not the nested evaluator: its OOF split is row modulo, its alpha choice combines score and cost losses, and its safety calibration omits Premium fill. Its default artifact/training behavior remains untouched.
+
+## Autonomous execution contract
+
+This document by itself authorizes no expensive run. A subsequent explicit user request
+such as **"implement through Task 6"**, **"run the complete nested evaluation"**, or
+**"run this overnight"** authorizes the following bounded sequence without further
+questions:
+
+1. Complete Tasks 1--5, including the focused tests and the one-outer-fold smoke run.
+2. Run `--full` only if those checks pass. A failed check is a hard stop: preserve its
+   report/log and do not run a partial or altered full evaluation.
+3. If the full report retains Raw or any winner gate fails, stop successfully with
+   `raw-retained`; do not train a new artifact or inspect Dev.
+4. Only an admitted non-Raw winner may enter finalization. If finalizer tests or
+   Train-only finalization fail, stop before Dev.
+5. Score exactly one frozen final artifact on Dev. A cap, protocol, parser, or runtime
+   failure produces `fallback-required`; do not retune. The deployable fallback is
+   exactly `baselines/hash-regex-public.v1.json`.
+
+The autonomous request never authorizes changing candidate grids, folds, feature family,
+cost family, allocator, or acceptance gates in response to an intermediate result.
 
 ### Task 1: Add pure fixed-capacity quality fitting primitives
 
@@ -357,19 +379,25 @@ git add tools/evaluate_hash_regex_quality_nested.py tests/test_evaluate_hash_reg
 git commit -m "feat: add safe hash-regex quality evaluator cli"
 ```
 
-### Task 6: Full evaluation and post-winner finalization are separately approved phases
+### Task 6: Full evaluation, locked finalization, and one-pass Dev sanity
 
 **Files:**
 
 - Create only after full-evaluation approval: `tools/train_hash_regex_quality_final.py`
 - Create only after full-evaluation approval: `tests/test_train_hash_regex_quality_final.py`
+- Create only after full-evaluation approval: `tools/score_hash_regex_artifact.py`
+- Create only after full-evaluation approval: `tests/test_score_hash_regex_artifact.py`
 - Generated: `build/hash-regex-quality/nested-evaluation.json`
 - Generated: `build/hash-regex-quality/finalization.json`
 - Generated: `build/hash-regex-quality/final-artifact.json`
+- Generated: `build/hash-regex-quality/dev-sanity.json`
 
 - [ ] **Step 1: Obtain explicit approval before a full 3x5 execution.**
 
-Do not run `--full` merely because this document exists. The approval must occur after focused tests and the one-fold smoke report have been reviewed.
+Do not run `--full` merely because this document exists. An explicit user request for a
+complete/overnight run is the approval specified by the autonomous execution contract.
+Otherwise, the approval must occur after focused tests and the one-fold smoke report
+have been reviewed.
 
 - [ ] **Step 2: Execute and inspect the full Train-only report.**
 
@@ -379,44 +407,110 @@ Run:
 $env:PYTHONPATH='src;baselines;tools'; python tools/evaluate_hash_regex_quality_nested.py --input data/materialized/train/inputs.json --outcomes data/train/outcomes.json --report build/hash-regex-quality/nested-evaluation.json --execute --full
 ```
 
-Expected: 15 folds and a machine-readable winner/gate section. If Raw wins, stop finalization and retain the specified frozen Raw artifact.
+Expected: 15 folds and a machine-readable winner/gate section. If Raw wins, or any
+gate fails, the nested report itself has terminal status `raw-retained` and
+`fallback_artifact: baselines/hash-regex-public.v1.json`. Do not create a candidate
+artifact, `finalization.json`, or a Dev sanity report.
 
 - [ ] **Step 3: Only if a non-Raw winner passes, write failing finalizer tests.**
 
 ```python
-def test_finalizer_accepts_only_a_winner_config_from_the_full_report() -> None:
-    config = finalizer.locked_config_from_report({"winner": {"name": "weighted-uplift", "strength": 2.0}})
-    self.assertEqual("weighted-uplift", config.name)
-    self.assertEqual(2.0, config.strength)
+def test_locked_winner_accepts_only_admitted_nonraw_report(tmp_path: Path) -> None:
+    report = tmp_path / "nested.json"
+    report.write_text(json.dumps({"winner": {"name": "weighted-uplift", "all_gates_pass": True}}))
+    self.assertEqual("weighted-uplift", finalizer.locked_winner_from_report(report))
 
-def test_final_artifact_uses_existing_schema_and_runtime_parser() -> None:
-    artifact_path = finalizer.write_final_artifact(valid_train_config, temporary_directory)
-    self.assertIsInstance(hash_regex.load_artifact(artifact_path), hash_regex.HashRegexArtifact)
+def test_locked_winner_rejects_raw_failed_or_unknown_reports(tmp_path: Path) -> None:
+    for winner in (
+        {"name": "raw", "all_gates_pass": True},
+        {"name": "weighted-uplift", "all_gates_pass": False},
+        {"name": "unknown", "all_gates_pass": True},
+    ):
+        report = tmp_path / f"{winner['name']}-{winner['all_gates_pass']}.json"
+        report.write_text(json.dumps({"winner": winner}))
+        with self.assertRaises(ValueError):
+            finalizer.locked_winner_from_report(report)
 
-def test_finalizer_rejects_dev_paths_and_unapproved_objective_values() -> None:
+def test_final_artifact_roundtrips_existing_parser(finalized_artifact: Path) -> None:
+    artifact = hash_regex.load_artifact(finalized_artifact)
+    self.assertIsInstance(artifact, hash_regex.HashRegexArtifact)
+    self.assertEqual(100.0, artifact.alpha)
+    self.assertEqual(256, artifact.hash_bins)
+
+def test_finalizer_rejects_dev_paths(tmp_path: Path) -> None:
     with self.assertRaises(ValueError):
-        finalizer.validate_train_paths(Path("data/dev/inputs.json"), TRAIN_OUTCOMES)
-    with self.assertRaises(ValueError):
-        finalizer.locked_config_from_report({"winner": {"name": "unknown", "strength": 1.0}})
+        finalizer.validate_train_paths(Path("data/materialized/dev/inputs.json"), tmp_path / "outcomes.json")
 ```
 
 - [ ] **Step 4: Implement a Train-only finalizer that consumes the locked winner config.**
 
-The finalizer reruns full-Train grouped OOF only to choose the winner's one strength and joint safety, fits quality/cost heads on all Train, converts uplift coefficients to ordinary raw score heads, and serializes `build/hash-regex-quality/final-artifact.json` through the existing artifact dictionary/parser. It records Train input/outcome SHA-256, winner, strength, safety, lambdas, and artifact digest in `finalization.json`. It does not alter the public artifact or runtime resources.
+Implement these public finalizer operations:
+
+1. `locked_winner_from_report(report_path) -> str` accepts only an admitted
+   `weighted-uplift` or `regret-weighted-raw` full nested report with every gate passed.
+2. `locked_full_train_configuration(data, winner, seed=20260827)` calls the same
+   inner-OOF selector on all Train rows and returns only that winner's pre-registered
+   strength, provisional joint safety, and tier lambdas. It may not compare candidates
+   again or use Dev.
+3. `write_final_artifact(data, config, artifact_path)` fits quality and fixed-family
+   cost heads on all Train, converts any uplift representation to raw score-head
+   coefficients, and writes the exact `HashRegexArtifact` dictionary schema. Its
+   `alpha` is `100.0`, `hash_bins` is `256`, and the existing parser must load it.
+4. `write_finalization_report(status, train_input_path, train_outcome_path, nested_report_path, configuration, artifact_path, report_path)` records `status`, Train input/outcome SHA-256,
+   nested-report SHA-256, winner, selected strength, safety, lambdas, artifact SHA-256,
+   and the immutable public fallback path. Never serialize prompts, IDs, or row-level
+   labels.
+
+The finalizer CLI is exactly:
+
+```powershell
+$env:PYTHONPATH='src;baselines;tools'; python tools/train_hash_regex_quality_final.py --input data/materialized/train/inputs.json --outcomes data/train/outcomes.json --nested-report build/hash-regex-quality/nested-evaluation.json --artifact build/hash-regex-quality/final-artifact.json --report build/hash-regex-quality/finalization.json
+```
+
+It rejects Dev paths and reports outside `build/hash-regex-quality/`. It does not alter
+the public artifact, runtime resources, or nested report. It exits nonzero on malformed
+or non-admitted reports. It is never called for a valid Raw/no-gate winner because the
+nested evaluator has already recorded that terminal `raw-retained` result.
 
 - [ ] **Step 5: Freeze before Dev and apply the one-pass fallback rule.**
 
-After finalizer tests pass, run the standard submission/runtime path once on Dev. If any tier cap or technical validity/runtime check fails, do not tune anything: use exactly `baselines/hash-regex-public.v1.json`. Lower Dev score or different route mix is logged only and cannot change the candidate.
+Write tests for the Dev scorer: it accepts a parser-loadable artifact, generates all
+three official tiers, calls `score_submissions`, writes a report, and has no imports or
+calls into any fitting, strength-selection, safety-selection, or artifact-writing
+function. A malformed artifact or Dev path/outcome mismatch raises before scoring.
+
+`tools/score_hash_regex_artifact.py` takes only `--input`, `--outcomes`, `--artifact`,
+and `--report`. It uses `hash_regex.make_hash_regex_submission` for Fast, Balanced, and
+Premium, invokes `score_submissions`, and writes unrounded score/cost/pass metrics plus
+`artifact_sha256`. Its `sanity_status` is `pass` only when all three caps and all
+technical/parser checks pass; otherwise it is `fallback-required`. It must never modify
+the artifact or generate a replacement.
+
+Run it exactly once after the finalizer and focused tests pass:
+
+```powershell
+$env:PYTHONPATH='src;baselines;tools'; python tools/score_hash_regex_artifact.py --input data/materialized/dev/inputs.json --outcomes data/dev/outcomes.json --artifact build/hash-regex-quality/final-artifact.json --report build/hash-regex-quality/dev-sanity.json
+```
+
+On `fallback-required`, retain the report and use exactly
+`baselines/hash-regex-public.v1.json`; do not change parameters or rerun Dev. A lower
+Dev score or a different route mix with `sanity_status=pass` is logged only and cannot
+change the frozen candidate.
 
 - [ ] **Step 6: Verify source/test work before integration.**
 
 Run:
 
 ```powershell
-$env:PYTHONPATH='src;baselines;tools'; python -m unittest tests.test_hash_regex_baseline tests.promptbudget.test_hash_regex_quality_nested tests.test_evaluate_hash_regex_quality_nested tests.test_check_runtime -v
+$env:PYTHONPATH='src;baselines;tools'; python -m unittest tests.test_hash_regex_baseline tests.promptbudget.test_hash_regex_quality_nested tests.test_evaluate_hash_regex_quality_nested tests.test_train_hash_regex_quality_final tests.test_score_hash_regex_artifact -v
 ```
 
-Expected: all tests pass. Generated reports/artifacts are not committed unless the user explicitly asks for them to be versioned.
+Also verify that the final artifact runs through the unchanged baseline entry point for
+each tier and that the Dev sanity report has no fitting/calibration fields. This task
+does not modify a packaged runtime, so the relevant runtime verification is existing
+parser/permutation coverage plus three-tier submission construction, not a container
+deployment check. Generated reports/artifacts are not committed unless the user
+explicitly asks for them to be versioned.
 
 ## Plan self-review
 
