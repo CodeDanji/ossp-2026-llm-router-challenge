@@ -9,7 +9,9 @@ import unittest
 
 import numpy as np
 
+import hash_regex
 import hash_regex_quality_nested as nested
+from ossp_router.protocol import MODEL_IDS
 
 
 class QualityFitTest(unittest.TestCase):
@@ -60,3 +62,30 @@ class QualityFitTest(unittest.TestCase):
                 regret=np.zeros((4, 2)),
             )
 
+    def test_group_disjointness_rejects_shared_content(self) -> None:
+        with self.assertRaises(ValueError):
+            nested.require_group_disjoint((0, 1), (2,), ("a", "b", "a"))
+
+    def test_lagrange_matches_runtime_batch_light_unit(self) -> None:
+        scores = np.asarray([[0.1, 0.8, 0.9], [0.3, 0.4, 0.8]])
+        costs = np.asarray([[1.0, 2.0, 4.0], [2.0, 3.0, 8.0]])
+        selected, penalty = nested.lagrange_selection_and_penalty(scores, costs, multiplier=1.25)
+        score_rows = [dict(zip(MODEL_IDS, row)) for row in scores]
+        cost_rows = [dict(zip(MODEL_IDS, row)) for row in costs]
+        expected, _ratio = hash_regex.select_models(
+            score_rows, cost_rows, budget_multiplier=1.25, safety_ratio=1.0
+        )
+        self.assertEqual(tuple(MODEL_IDS[index] for index in selected), expected)
+        self.assertGreaterEqual(penalty, 0.0)
+
+    def test_batched_safety_selection_matches_runtime_allocator(self) -> None:
+        scores = np.asarray([[0.1, 0.8, 0.9], [0.3, 0.4, 0.8]])
+        costs = np.asarray([[1.0, 2.0, 4.0], [2.0, 3.0, 8.0]])
+        selections = nested.lagrange_selections_for_safety_grid(scores, costs, 1.25, (0.8, 1.0))
+        score_rows = [dict(zip(MODEL_IDS, row)) for row in scores]
+        cost_rows = [dict(zip(MODEL_IDS, row)) for row in costs]
+        for safety, selected in zip((0.8, 1.0), selections):
+            expected, _ratio = hash_regex.select_models(
+                score_rows, cost_rows, budget_multiplier=1.25, safety_ratio=safety
+            )
+            self.assertEqual(tuple(MODEL_IDS[index] for index in selected), expected)
