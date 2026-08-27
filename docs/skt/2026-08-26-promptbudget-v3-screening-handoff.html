@@ -41,8 +41,8 @@
     <p>공식 규칙과 baseline/runtime을 다시 확인한 결과, content-only 및 ID/order permutation invariance를 지키는 <strong>batch-dependent allocation은 허용</strong>된다. 기존 <code>hash_regex.select_models</code>의 batch Lagrange 방식은 유지한다.</p>
     <p>공식 decision record와 구현 명세는 다음 worktree에 있다. 구현에는 두 번째 문서만으로 충분하고, 첫 번째는 판단의 이유와 금지 범위를 학습할 때 참조한다.</p>
     <ul>
-      <li><a href="../../.worktrees/promptbudget-v3/docs/superpowers/specs/2026-08-27-promptbudget-hash-regex-quality-decision.md">decision record</a> — 연구 근거, 반증, 결정 이유와 해석 경계</li>
-      <li><a href="../../.worktrees/promptbudget-v3/docs/superpowers/plans/2026-08-27-promptbudget-hash-regex-quality-objective.md">implementation plan</a> — 구현, nested evaluation, finalization, Dev sanity의 실행 명세</li>
+      <li><a href="../superpowers/specs/2026-08-27-promptbudget-hash-regex-quality-decision.md">decision record</a> — 연구 근거, 반증, 결정 이유와 해석 경계</li>
+      <li><a href="../superpowers/plans/2026-08-27-promptbudget-hash-regex-quality-objective.md">implementation plan</a> — 구현, nested evaluation, finalization, Dev sanity의 실행 명세</li>
     </ul>
     <p>작업 방식 제약: ponytail은 사용하지 않는다. 개선 가능성이 확인된 부분을 방치하지 않되, 사전 승인된 비교 이외의 복잡도는 추가하지 않는다.</p>
   </div>
@@ -212,11 +212,11 @@ foreach ($tier in 'fast','balanced','premium') {
 
   <h2>11. 다음 작업자가 시작할 때 읽을 파일</h2>
   <ol>
-    <li><code>.worktrees/promptbudget-v3/docs/superpowers/plans/2026-08-27-promptbudget-hash-regex-quality-objective.md</code> — 다음 구현자가 반드시 읽을 self-contained 실행 명세. Task 1--6, artifact schema, fallback, Dev one-pass rule을 포함한다.</li>
-    <li><code>.worktrees/promptbudget-v3/docs/superpowers/specs/2026-08-27-promptbudget-hash-regex-quality-decision.md</code> — 선택 사항이지만 권장. hash-regex track의 의도, counterfactual evidence, 금지 범위와 판단 이유를 설명한다.</li>
-    <li><code>.worktrees/promptbudget-v3/baselines/hash_regex.py</code>, <code>.worktrees/promptbudget-v3/baselines/hash-regex-public.v1.json</code>, <code>.worktrees/promptbudget-v3/baselines/train_hash_regex.py</code> — 고정 runtime family와 legacy trainer의 차이를 확인한다.</li>
-    <li><code>.worktrees/promptbudget-v3/build/promptbudget-v3/nested-evaluation.json</code> — delta-linear v3 formal No-Go의 유일한 원자료. hash-regex에 대한 반증으로 읽지 않는다.</li>
-    <li><code>.worktrees/promptbudget-v3/docs/superpowers/specs/2026-08-26-promptbudget-v3-nested-evaluation-design.md</code> 및 <code>.worktrees/promptbudget-v3/docs/superpowers/specs/2026-08-25-promptbudget-v3-delta-utility-design.md</code> — 이전 delta-linear 가설과 formal protocol의 역사 기록.</li>
+    <li><code>docs/superpowers/plans/2026-08-27-promptbudget-hash-regex-quality-objective.md</code> — 다음 구현자가 반드시 읽을 self-contained 실행 명세. Task 1--6, artifact schema, fallback, Dev one-pass rule을 포함한다.</li>
+    <li><code>docs/superpowers/specs/2026-08-27-promptbudget-hash-regex-quality-decision.md</code> — 선택 사항이지만 권장. hash-regex track의 의도, counterfactual evidence, 금지 범위와 판단 이유를 설명한다.</li>
+    <li><code>baselines/hash_regex.py</code>, <code>baselines/hash-regex-public.v1.json</code>, <code>baselines/train_hash_regex.py</code> — 고정 runtime family와 legacy trainer의 차이를 확인한다.</li>
+    <li><code>build/promptbudget-v3/nested-evaluation.json</code> — delta-linear v3 formal No-Go의 유일한 원자료. hash-regex에 대한 반증으로 읽지 않는다.</li>
+    <li><code>docs/superpowers/specs/2026-08-26-promptbudget-v3-nested-evaluation-design.md</code> 및 <code>docs/superpowers/specs/2026-08-25-promptbudget-v3-delta-utility-design.md</code> — 이전 delta-linear 가설과 formal protocol의 역사 기록.</li>
     <li><code>docs/PROMPTBUDGET_V2_OPERATIONS.md</code> 및 <code>docs/skt/2026-08-25-promptbudget-v2.1-implementation-handoff.md</code> — v2.1의 경계와 재현 이력.</li>
   </ol>
 
@@ -224,11 +224,11 @@ foreach ($tier in 'fast','balanced','premium') {
   <table>
     <thead><tr><th>구분</th><th>값</th><th>의미</th></tr></thead>
     <tbody>
-      <tr><td>사용자에게 보이는 handoff</td><td><code>C:\Users\alvin\바탕 화면\창프\오픈소스\router-repo\docs\skt\2026-08-26-promptbudget-v3-screening-handoff.html</code></td><td>이 문서. delta No-Go 기록과 hash-regex 후속 실행 계약을 함께 보관한다.</td></tr>
+      <tr><td>사용자에게 보이는 handoff</td><td><code>C:\Users\alvin\바탕 화면\창프\오픈소스\router-repo\docs\skt\2026-08-26-promptbudget-v3-screening-handoff.html</code></td><td>root checkout의 문서와 현재 worktree 문서는 같은 handoff 내용을 유지한다.</td></tr>
       <tr><td>사용자에게 보이는 delta formal 결과</td><td><code>C:\Users\alvin\바탕 화면\창프\오픈소스\router-repo\.worktrees\promptbudget-v3\build\promptbudget-v3\nested-evaluation.json</code></td><td>delta-linear full Train-only formal report. source control 대상은 아님.</td></tr>
       <tr><td>다음 hash-regex 생성 결과</td><td><code>C:\Users\alvin\바탕 화면\창프\오픈소스\router-repo\.worktrees\promptbudget-v3\build\hash-regex-quality\</code></td><td>nested report, finalization, final artifact, Dev sanity를 이 격리 build root에만 쓴다.</td></tr>
       <tr><td>연구 runtime/evaluator 경로</td><td><code>C:\Users\alvin\바탕 화면\창프\오픈소스\router-repo\.worktrees\promptbudget-v3\baselines</code>, <code>tools</code></td><td>hash-regex runtime family를 유지한다. public resource/default artifact는 미변경.</td></tr>
-      <tr><td>브랜치 및 원격</td><td><code>codex/promptbudget-v3</code>, local commits <code>a7f0602</code> and <code>821c447</code>; push 없음</td><td>main에는 관련 없는 사용자 변경이 있어 merge/push하지 않는다.</td></tr>
+      <tr><td>브랜치 및 원격</td><td><code>codex/promptbudget-v3</code>, local commits <code>a7f0602</code> and <code>821c447</code>; push 없음</td><td>main에는 handoff commit <code>caab42d</code>가 있고, 관련 변경을 자동 merge/push하지 않는다.</td></tr>
     </tbody>
   </table>
 </main>
