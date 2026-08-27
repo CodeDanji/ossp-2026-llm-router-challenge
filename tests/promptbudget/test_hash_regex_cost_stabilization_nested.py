@@ -65,6 +65,12 @@ class HashRegexCostStabilizationNestedTests(unittest.TestCase):
             nested.apply_cost_multipliers(
                 np.asarray([[1.0, 1e20, 2e20]]), ax31=1e308, think=1.5
             )
+        with self.assertRaises(ValueError):
+            nested.apply_cost_multipliers(
+                np.asarray([[np.finfo(float).max, 1.0, 1.0]]),
+                ax31=1.0,
+                think=1.0,
+            )
 
     def test_fitted_arrays_are_read_only(self):
         heads = nested.fit_raw_quality_heads(self.matrix[:4], self.scores[:4])

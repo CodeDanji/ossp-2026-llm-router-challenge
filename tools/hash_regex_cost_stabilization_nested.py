@@ -146,8 +146,11 @@ def apply_cost_multipliers(costs: np.ndarray, *, ax31: float, think: float) -> n
         result[:, 2] *= float(think)
     if not np.isfinite(result).all():
         raise ValueError("scaled costs must be finite")
-    result[:, 1] = np.maximum(result[:, 1], result[:, 0] * (1.0 + 1e-12))
-    result[:, 2] = np.maximum(result[:, 2], result[:, 1] * (1.0 + 1e-12))
+    with np.errstate(over="ignore", invalid="ignore"):
+        result[:, 1] = np.maximum(result[:, 1], result[:, 0] * (1.0 + 1e-12))
+        result[:, 2] = np.maximum(result[:, 2], result[:, 1] * (1.0 + 1e-12))
+    if not np.isfinite(result).all():
+        raise ValueError("ordered costs must be finite")
     return result
 
 
