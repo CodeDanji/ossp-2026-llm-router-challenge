@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
@@ -71,6 +72,11 @@ class ScreenHashRegexV4FillTest(unittest.TestCase):
             ), mock.patch.object(cli, "validate_batches", return_value=(1760, None)), mock.patch.object(
                 cli, "_sha256", return_value="hash"
             ), mock.patch.object(cli.v32, "make_evaluation_data", return_value=data), mock.patch.object(
+                cli.v4, "_score_routes", return_value={"tiers": {
+                    tier: {"total_cost": "1.00", "budget_limit": "2.00"}
+                    for tier in ("fast", "balanced", "premium")
+                }}
+            ), mock.patch.object(
                 cli, "screen_candidate", side_effect=AssertionError("must not screen")
             ):
                 result = cli.screen(args)
@@ -78,6 +84,32 @@ class ScreenHashRegexV4FillTest(unittest.TestCase):
             self.assertTrue(report.exists())
 
         self.assertEqual("no-recovery-signal", result["terminal_status"])
+
+    def test_winner_uses_weighted_changed_tier_delta(self):
+        fast = {
+            "candidate": "fast-ax31-fill",
+            "changed_tier_pooled_cap_neutral_quality_deltas": {"fast": Decimal("0.08")},
+            "actual_checks": ({"actual_ratio": Decimal("1.01")},),
+        }
+        combined = {
+            "candidate": "fast-balanced-ax31-fill",
+            "changed_tier_pooled_cap_neutral_quality_deltas": {
+                "fast": Decimal("0.07"), "balanced": Decimal("0.07"),
+            },
+            "actual_checks": ({"actual_ratio": Decimal("1.01")},),
+        }
+
+        self.assertEqual(combined, min((fast, combined), key=cli._winner_key))
+
+    def test_recoverability_uses_official_decimal_cost_slack(self):
+        data = type("Data", (), {"scores": np.asarray([[0.0, 1.0, 0.0]]), "costs": np.asarray([[1.0, 999.0, 999.0]])})()
+        baseline = {tier: cli.v4.Route(("axk1-low",), 0.0) for tier in ("fast", "balanced", "premium")}
+        metrics = {"total_cost": "9.00", "budget_limit": "10.00"}
+        with mock.patch.object(cli.v4, "_score_routes", return_value={"tiers": {"fast": {"total_cost": "9.50"}}}):
+            slack, count = cli._official_recoverable_ax31_pool(data, (0,), baseline, "fast", metrics)
+
+        self.assertEqual(Decimal("1.00"), slack)
+        self.assertEqual(1, count)
 
 
 if __name__ == "__main__":

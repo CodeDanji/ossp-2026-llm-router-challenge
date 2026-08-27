@@ -83,6 +83,33 @@ def _atomic_json(path: Path, value: Mapping[str, object]) -> None:
             os.unlink(temporary)
 
 
+def _official_recoverable_ax31_pool(
+    data: v32.EvaluationData,
+    indices: Sequence[int],
+    baseline: Mapping[str, v4.Route],
+    tier: str,
+    metrics: Mapping[str, object],
+) -> tuple[Decimal, int]:
+    """Return Decimal scorer slack and AX31 upgrades that individually fit it."""
+
+    baseline_cost = Decimal(str(metrics["total_cost"]))
+    slack = Decimal(str(metrics["budget_limit"])) - baseline_cost
+    if slack <= 0:
+        return slack, 0
+    recoverable = 0
+    for local, (index, choice) in enumerate(zip(indices, baseline[tier].choices)):
+        if choice != "axk1-low" or data.scores[index, 1] <= data.scores[index, 0]:
+            continue
+        choices = list(baseline[tier].choices)
+        choices[local] = "axk1-instant"
+        candidate = dict(baseline)
+        candidate[tier] = v4.Route(tuple(choices), baseline[tier].predicted_ratio)
+        upgraded_cost = Decimal(str(v4._score_routes(data, tuple(indices), candidate)["tiers"][tier]["total_cost"]))
+        if Decimal("0") < upgraded_cost - baseline_cost <= slack:
+            recoverable += 1
+    return slack, recoverable
+
+
 def _run_diagnostic(data: v32.EvaluationData, folds: Sequence[object]) -> dict[str, object]:
     """Use the frozen guarded route to find held-out Fast/Balance recovery signal."""
 
@@ -109,21 +136,20 @@ def _run_diagnostic(data: v32.EvaluationData, folds: Sequence[object]) -> dict[s
         raw_baseline = v4._baseline_routes(score_rows, raw_cost_rows, data)
         guarded = {**baseline, "guard_buckets": guard_buckets}
         diagnostic = blocked_upgrade_diagnostic(data, validation_indices, raw_baseline, guarded)
+        baseline_report = v4._score_routes(data, validation_indices, baseline)
         tier_record = {}
         for tier in ("fast", "balanced"):
             item = diagnostic[tier]
-            slack = float(item["actual_slack"])
             blocked_gain = sum(float(row["observed_score_gain_vs_light"]) for row in item["rows"])
-            recoverable = sum(
-                choice == "axk1-low" and data.scores[index, 1] > data.scores[index, 0]
-                and 0 < data.costs[index, 1] - data.costs[index, 0] <= slack
-                for index, choice in zip(validation_indices, baseline[tier].choices)
+            slack, recoverable = _official_recoverable_ax31_pool(
+                data, validation_indices, baseline, tier, baseline_report["tiers"][tier]
             )
             tier_totals[tier]["blocked_observed_score_gain_total"] += blocked_gain
             tier_totals[tier]["slack_recoverable_ax31_pool_count"] += recoverable
             tier_record[tier] = {
-                **item,
+                "blocked_row_count": item["blocked_row_count"],
                 "blocked_observed_score_gain_total": blocked_gain,
+                "official_actual_budget_slack": slack,
                 "slack_recoverable_ax31_pool_count": recoverable,
             }
         records.append({"fold": number, "tiers": tier_record})
@@ -158,9 +184,10 @@ def _candidate_summary(result: Mapping[str, object]) -> dict[str, object]:
 
 def _winner_key(result: Mapping[str, object]) -> tuple[Decimal, Decimal, str]:
     deltas = result["changed_tier_pooled_cap_neutral_quality_deltas"]
-    largest_delta = max(Decimal(str(value)) for value in deltas.values())
+    weights = {"fast": Decimal("0.4"), "balanced": Decimal("0.3"), "premium": Decimal("0.3")}
+    weighted_delta = sum((weights[tier] * Decimal(str(value)) for tier, value in deltas.items()), Decimal("0"))
     maximum_ratio = max(Decimal(str(check["actual_ratio"])) for check in result["actual_checks"])
-    return (-largest_delta, maximum_ratio, str(result["candidate"]))
+    return (-weighted_delta, maximum_ratio, str(result["candidate"]))
 
 
 def screen(args: argparse.Namespace) -> Mapping[str, object]:
