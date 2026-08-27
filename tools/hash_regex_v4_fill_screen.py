@@ -38,6 +38,11 @@ def _require_candidate(candidate: str) -> tuple[str, ...]:
         raise ValueError(f"unknown v4 candidate: {candidate}") from error
 
 
+def _require_train_data(data: v32.EvaluationData) -> None:
+    if data.inputs is None or data.outcomes is None or data.inputs.split != "train" or data.outcomes.split != "train":
+        raise ValueError("v4 fill screening accepts Train evaluation data only")
+
+
 def _prediction_rows(
     scores: np.ndarray, log_costs: np.ndarray, guard: nested.TailGuard | None
 ) -> tuple[list[dict[str, float]], list[dict[str, float]], tuple[tuple[int, int], ...]]:
@@ -135,6 +140,7 @@ def route_guarded_candidate(
 ) -> dict[str, object]:
     """Reconstruct the guarded v3.3 route and apply only the allowed AX31 fills."""
 
+    _require_train_data(data)
     candidate_tiers = _require_candidate(candidate)
     selected_indices = v32._validated_indices(data, tuple(indices))
     score_rows, guarded_cost_rows, guard_buckets = _prediction_rows(score_prediction, cost_prediction, guard)
@@ -239,15 +245,35 @@ def _tier_quality(report: dict[str, object], tier: str) -> Decimal:
 def screen_candidate(data: v32.EvaluationData, folds: Sequence[object], candidate: str) -> dict[str, object]:
     """Cross-fit a fixed four-fold Train screen without reading held-out labels while fitting."""
 
+    _require_train_data(data)
     changed_tiers = _require_candidate(candidate)
     if len(folds) != 4:
         raise ValueError("v4 screen requires exactly four grouped folds")
-    records = []
+    expected_rows = set(range(len(data.matrix)))
+    if len(data.groups) != len(expected_rows):
+        raise ValueError("screen groups must align with evaluation rows")
+    validation_rows = []
+    validation_groups: dict[str, set[int]] = {}
+    validated_folds = []
     for number, fold in enumerate(folds):
-        train_indices = tuple(fold.train_indices)
-        validation_indices = tuple(fold.validation_indices)
-        if set(train_indices) & set(validation_indices) or set(data.groups[index] for index in train_indices) & set(data.groups[index] for index in validation_indices):
+        train_indices = v32._validated_indices(data, tuple(fold.train_indices))
+        validation_indices = v32._validated_indices(data, tuple(fold.validation_indices))
+        if set(train_indices) & set(validation_indices) or set(train_indices) | set(validation_indices) != expected_rows:
+            raise ValueError("each screen fold must partition every evaluation row")
+        train_groups = {data.groups[index] for index in train_indices}
+        fold_validation_groups = {data.groups[index] for index in validation_indices}
+        if train_groups & fold_validation_groups:
             raise ValueError("screen folds must be group-disjoint")
+        validation_rows.extend(validation_indices)
+        for group in fold_validation_groups:
+            validation_groups.setdefault(group, set()).add(number)
+        validated_folds.append((train_indices, validation_indices))
+    if set(validation_rows) != expected_rows or len(validation_rows) != len(expected_rows):
+        raise ValueError("screen validation rows must cover every evaluation row exactly once")
+    if set(validation_groups) != set(data.groups) or any(len(numbers) != 1 for numbers in validation_groups.values()):
+        raise ValueError("screen validation groups must cover every Train group exactly once")
+    records = []
+    for number, (train_indices, validation_indices) in enumerate(validated_folds):
         guard = nested.fit_tail_guard(data, train_indices, seed=137)
         quality = v32.fit_raw_quality_heads(data.matrix[list(train_indices)], data.scores[list(train_indices)])
         costs = v32.fit_log_cost_heads(data.matrix[list(train_indices)], data.log_costs[list(train_indices)])

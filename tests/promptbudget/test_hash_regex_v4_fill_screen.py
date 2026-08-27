@@ -1,3 +1,4 @@
+import dataclasses
 import unittest
 from decimal import Decimal
 
@@ -51,6 +52,31 @@ class HashRegexV4FillScreenTests(unittest.TestCase):
         self.assertEqual(12, result["actual_checks_required"])
         self.assertEqual(12, len(result["actual_checks"]))
         self.assertEqual(4, len(result["fold_deltas"]["balanced"]))
+
+    def test_screen_rejects_duplicate_validation_group(self):
+        data = self._data(12)
+        folds = grouped_folds(data.groups, folds=4, seed=137)
+        malformed = (folds[0], folds[0], folds[2], folds[3])
+
+        with self.assertRaises(ValueError):
+            screen.screen_candidate(data, malformed, "balanced-ax31-fill")
+
+    def test_public_entry_points_reject_dev_data(self):
+        train = self._data(12)
+        dev = dataclasses.replace(
+            train,
+            inputs=dataclasses.replace(train.inputs, split="dev"),
+            outcomes=dataclasses.replace(train.outcomes, split="dev"),
+        )
+        scores = train.scores[:4]
+        costs = train.log_costs[:4]
+
+        with self.assertRaises(ValueError):
+            screen.route_guarded_candidate(
+                dev, (0, 1, 2, 3), scores, costs, self._guard(), "fast-ax31-fill"
+            )
+        with self.assertRaises(ValueError):
+            screen.screen_candidate(dev, grouped_folds(dev.groups, folds=4, seed=137), "fast-ax31-fill")
 
     @staticmethod
     def _guard():
