@@ -430,3 +430,251 @@ def select_inner_multiplier(
         "inner_folds": chosen[4]["inner_folds"],
         "pooled_for_routing": False,
     }
+
+
+def _score_all_light_policy(
+    data: EvaluationData, indices: tuple[int, ...]
+) -> dict[str, object]:
+    """Score a complete all-Light policy through the official scorer."""
+
+    selected_indices = _validated_indices(data, indices)
+    inputs, outcomes = _slice_batches(data, selected_indices)
+    submissions = tuple(
+        Submission(
+            schema_version=inputs.schema_version,
+            challenge_id=inputs.challenge_id,
+            policy_id=data.policy.policy_id,
+            split=inputs.split,
+            tier=tier,
+            decisions=tuple(
+                Decision(episode.episode_id, MODEL_IDS[0]) for episode in inputs.episodes
+            ),
+        )
+        for tier in TIERS
+    )
+    report = score_submissions(inputs, outcomes, submissions, data.policy)
+    report["tiers"] = {
+        tier: {
+            **report["tiers"][tier],
+            "actual_ratio": report["tiers"][tier]["budget_ratio"],
+            "predicted_ratio": None,
+            "includes_premium_fill": tier == "premium",
+        }
+        for tier in TIERS
+    }
+    return report
+
+
+def _final_non_light(report: dict[str, object]) -> dict[str, object]:
+    tiers = report["tiers"]
+    tier_counts: dict[str, dict[str, object]] = {}
+    selected_total = 0
+    possible_total = 0
+    for tier in TIERS:
+        metrics = tiers[tier]
+        rows = int(metrics["num_episodes"])
+        if rows <= 0:
+            raise ValueError("outer report tiers require positive row counts")
+        model_counts = metrics["model_counts"]
+        count = sum(int(model_counts[model_id]) for model_id in MODEL_IDS[1:])
+        tier_counts[tier] = {
+            "count": count,
+            "rows": rows,
+            "retention": Decimal(count) / Decimal(rows),
+        }
+        selected_total += count
+        possible_total += rows
+    return {
+        "tiers": tier_counts,
+        "total": {
+            "count": selected_total,
+            "rows": possible_total,
+            "retention": Decimal(selected_total) / Decimal(possible_total),
+        },
+    }
+
+
+def evaluate_outer_fold(
+    data: EvaluationData,
+    outer_train: Sequence[int],
+    outer_test: Sequence[int],
+    seed: int = 137,
+    fold: int = 0,
+) -> dict[str, object]:
+    """Lock calibration on outer-train, then score the selected test route once."""
+
+    train_indices = _validated_indices(data, tuple(outer_train))
+    test_indices = _validated_indices(data, tuple(outer_test))
+    if set(train_indices) & set(test_indices):
+        raise ValueError("outer train and test indices must be disjoint")
+    if set(data.groups[index] for index in train_indices) & set(
+        data.groups[index] for index in test_indices
+    ):
+        raise ValueError("outer train and test content groups must be disjoint")
+
+    selection = select_inner_multiplier(data, train_indices, seed)
+    quality = fit_raw_quality_heads(
+        data.matrix[list(train_indices)], data.scores[list(train_indices)]
+    )
+    costs = fit_log_cost_heads(
+        data.matrix[list(train_indices)], data.log_costs[list(train_indices)]
+    )
+    quality_prediction = predict_heads(quality, data.matrix[list(test_indices)])
+    cost_prediction = predict_heads(costs, data.matrix[list(test_indices)])
+
+    raw_report = score_batch_policy(
+        data, test_indices, quality_prediction, cost_prediction, (1.0, 1.0)
+    )
+    fallback = selection["route"] == "all-light"
+    if fallback:
+        selected_report = _score_all_light_policy(data, test_indices)
+        pair = None
+    else:
+        pair = selection["pair"]
+        if pair is None:
+            raise AssertionError("admitted multiplier selection must include a pair")
+        selected_report = (
+            raw_report
+            if pair == (1.0, 1.0)
+            else score_batch_policy(
+                data, test_indices, quality_prediction, cost_prediction, pair
+            )
+        )
+    selected_non_light = _final_non_light(selected_report)
+    raw_non_light = _final_non_light(raw_report)
+    return {
+        "seed": seed,
+        "fold": fold,
+        "outer_train_indices": train_indices,
+        "outer_test_indices": test_indices,
+        "inner_selection": selection,
+        "route": selection["route"],
+        "fallback_all_light": fallback,
+        "pair": pair,
+        "selected_report": selected_report,
+        "outer_test_evaluations": 1,
+        "selected_final_non_light": selected_non_light,
+        "tier_retention": selected_non_light["tiers"],
+        "total_retention": selected_non_light["total"],
+        "raw_comparator": {
+            "pair": (1.0, 1.0),
+            "report": raw_report,
+            "final_non_light": raw_non_light,
+        },
+    }
+
+
+def _cap_neutral_score(report: dict[str, object]) -> Decimal:
+    """Return official weighted quality before any budget-cap zeroing."""
+
+    tiers = report["tiers"]
+    rows = int(tiers["fast"]["num_episodes"])
+    if rows <= 0 or any(int(tiers[tier]["num_episodes"]) != rows for tier in TIERS):
+        raise ValueError("paired reports require aligned positive tier rows")
+    weights = report.get("tier_weights")
+    if not isinstance(weights, dict):
+        raise ValueError("report must include official tier weights")
+    points = sum(
+        (
+            _exact_decimal(tiers[tier]["quality_points_total"], "quality points")
+            * _exact_decimal(weights[tier], "tier weight")
+            for tier in TIERS
+        ),
+        Decimal("0"),
+    )
+    return points / Decimal(rows)
+
+
+def _retention(numerator: int, denominator: int) -> dict[str, object]:
+    return {
+        "numerator": numerator,
+        "denominator": denominator,
+        "not_applicable": denominator == 0,
+        "value": None if denominator == 0 else Decimal(numerator) / Decimal(denominator),
+    }
+
+
+def aggregate_outer_folds(folds: Sequence[dict[str, object]]) -> dict[str, object]:
+    """Aggregate fixed outer-fold diagnostics without demoting them into gates."""
+
+    if not folds:
+        raise ValueError("at least one outer-fold record is required")
+    if len(folds) != 15:
+        raise ValueError("outer aggregation requires exactly fifteen fold records")
+    identifiers = {(record["seed"], record["fold"]) for record in folds}
+    if len(identifiers) != len(folds):
+        raise ValueError("outer aggregation requires distinct seed/fold records")
+    if any(int(record["outer_test_evaluations"]) != 1 for record in folds):
+        raise ValueError("each outer fold must score its selected outer test once")
+    checks = []
+    official_deltas = []
+    cap_neutral_deltas = []
+    selected_counts = {tier: 0 for tier in TIERS}
+    raw_counts = {tier: 0 for tier in TIERS}
+    selected_total = raw_total = 0
+    fallbacks = 0
+    for record in folds:
+        selected_report = record["selected_report"]
+        raw = record["raw_comparator"]
+        raw_report = raw["report"]
+        for tier in TIERS:
+            metrics = selected_report["tiers"][tier]
+            checks.append(
+                {
+                    "seed": record["seed"],
+                    "fold": record["fold"],
+                    "tier": tier,
+                    "budget_passed": bool(metrics["budget_passed"]),
+                    "actual_ratio": _exact_decimal(metrics["actual_ratio"], "actual ratio"),
+                }
+            )
+        official_deltas.append(
+            _exact_decimal(selected_report["final_score"], "final score")
+            - _exact_decimal(raw_report["final_score"], "raw final score")
+        )
+        cap_neutral_deltas.append(
+            _cap_neutral_score(selected_report) - _cap_neutral_score(raw_report)
+        )
+        final = record["selected_final_non_light"]
+        raw_final = raw["final_non_light"]
+        for tier in TIERS:
+            selected_counts[tier] += int(final["tiers"][tier]["count"])
+            raw_counts[tier] += int(raw_final["tiers"][tier]["count"])
+        selected_total += int(final["total"]["count"])
+        raw_total += int(raw_final["total"]["count"])
+        fallbacks += int(bool(record["fallback_all_light"]))
+    passed = sum(check["budget_passed"] for check in checks)
+    required = 45
+    all_checks_pass = len(checks) == required and passed == required
+    if not all_checks_pass:
+        status = "cost-calibration-no-go"
+    elif fallbacks:
+        status = "safe-but-collapse"
+    else:
+        status = "safe-candidate"
+    retention = {
+        "non_light_retention": _retention(selected_total, raw_total),
+        "tier_retention": {
+            tier: _retention(selected_counts[tier], raw_counts[tier]) for tier in TIERS
+        },
+    }
+    return {
+        "actual_checks": tuple(checks),
+        "actual_checks_passed": passed,
+        "actual_checks_required": required,
+        "maximum_actual_ratio": max(check["actual_ratio"] for check in checks),
+        "raw_paired_official_score_delta": {
+            "fold_deltas": tuple(official_deltas),
+            "total": sum(official_deltas, Decimal("0")),
+            "mean": sum(official_deltas, Decimal("0")) / Decimal(len(official_deltas)),
+        },
+        "raw_paired_cap_neutral_quality_delta": {
+            "fold_deltas": tuple(cap_neutral_deltas),
+            "total": sum(cap_neutral_deltas, Decimal("0")),
+            "mean": sum(cap_neutral_deltas, Decimal("0")) / Decimal(len(cap_neutral_deltas)),
+        },
+        "promotion": {"outer_45_of_45_pass": all_checks_pass},
+        "fallback_all_light_folds": fallbacks,
+        "retention": retention,
+        "status": status,
+    }

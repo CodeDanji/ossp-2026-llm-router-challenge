@@ -253,6 +253,62 @@ class HashRegexCostStabilizationNestedTests(unittest.TestCase):
             result,
         )
 
+    def test_outer_fold_scores_the_selected_outer_test_route_once(self):
+        data = self._grouped_policy_data(12)
+
+        result = nested.evaluate_outer_fold(
+            data, tuple(range(8)), tuple(range(8, 12)), seed=137, fold=0
+        )
+
+        self.assertEqual(1, result["outer_test_evaluations"])
+        self.assertEqual((8, 9, 10, 11), result["outer_test_indices"])
+        self.assertIn(result["route"], {"cost-multiplied", "all-light"})
+        self.assertIn("raw_comparator", result)
+        self.assertEqual((1.0, 1.0), result["raw_comparator"]["pair"])
+        self.assertTrue(
+            all(
+                tier in result["selected_final_non_light"]["tiers"]
+                for tier in ("fast", "balanced", "premium")
+            )
+        )
+
+    def test_aggregate_requires_all_45_actual_checks_for_promotion(self):
+        folds = [self._outer_fold_report(index, failed=index == 14) for index in range(15)]
+
+        result = nested.aggregate_outer_folds(folds)
+
+        self.assertEqual(44, result["actual_checks_passed"])
+        self.assertEqual(45, result["actual_checks_required"])
+        self.assertFalse(result["promotion"]["outer_45_of_45_pass"])
+        self.assertEqual("cost-calibration-no-go", result["status"])
+        self.assertIn("raw_paired_official_score_delta", result)
+        self.assertIn("raw_paired_cap_neutral_quality_delta", result)
+
+    def test_aggregate_keeps_retention_diagnostic_and_flags_safe_collapse(self):
+        folds = [
+            self._outer_fold_report(index, fallback=index == 0, non_light=0)
+            for index in range(15)
+        ]
+
+        result = nested.aggregate_outer_folds(folds)
+
+        self.assertTrue(result["promotion"]["outer_45_of_45_pass"])
+        self.assertEqual("safe-but-collapse", result["status"])
+        self.assertTrue(result["retention"]["non_light_retention"]["not_applicable"])
+        self.assertIsNone(result["retention"]["non_light_retention"]["value"])
+
+    def test_aggregate_rejects_duplicate_or_repeated_outer_test_evaluations(self):
+        folds = [self._outer_fold_report(index) for index in range(15)]
+        duplicate = list(folds)
+        duplicate[14] = folds[0]
+        repeated = list(folds)
+        repeated[14] = {**folds[14], "outer_test_evaluations": 2}
+
+        for malformed in (duplicate, repeated):
+            with self.subTest(malformed=malformed is duplicate):
+                with self.assertRaises(ValueError):
+                    nested.aggregate_outer_folds(malformed)
+
     @staticmethod
     def _inner_report(rows, ratio, failed_tier=None):
         return {
@@ -266,6 +322,52 @@ class HashRegexCostStabilizationNestedTests(unittest.TestCase):
                 }
                 for tier in ("fast", "balanced", "premium")
             },
+        }
+
+    @staticmethod
+    def _outer_fold_report(index, *, failed=False, fallback=False, non_light=1):
+        def report(score, cap_failed=False):
+            return {
+                "final_weighted_points_total": str(score * 2),
+                "final_score": str(score),
+                "tiers": {
+                    tier: {
+                        "budget_passed": not (cap_failed and tier == "premium"),
+                        "actual_ratio": str(Decimal("1.0") + Decimal(index) / Decimal("1000")),
+                        "num_episodes": 2,
+                        "quality_points_total": str(score * 2),
+                    }
+                    for tier in ("fast", "balanced", "premium")
+                },
+                "tier_weights": {
+                    "fast": str(Decimal(1) / Decimal(3)),
+                    "balanced": str(Decimal(1) / Decimal(3)),
+                    "premium": str(Decimal(1) / Decimal(3)),
+                },
+            }
+
+        def final_non_light(count):
+            return {
+                "tiers": {
+                    tier: {"count": count, "rows": 2, "retention": Decimal(count) / Decimal(2)}
+                    for tier in ("fast", "balanced", "premium")
+                },
+                "total": {"count": count * 3, "rows": 6, "retention": Decimal(count) / Decimal(2)},
+            }
+
+        return {
+            "seed": 137 + index,
+            "fold": index,
+            "route": "all-light" if fallback else "cost-multiplied",
+            "fallback_all_light": fallback,
+            "outer_test_evaluations": 1,
+            "selected_report": report(Decimal("0.6"), cap_failed=failed),
+            "raw_comparator": {
+                "pair": (1.0, 1.0),
+                "report": report(Decimal("0.5")),
+                "final_non_light": final_non_light(0),
+            },
+            "selected_final_non_light": final_non_light(non_light),
         }
 
     @staticmethod
