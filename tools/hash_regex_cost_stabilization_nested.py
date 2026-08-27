@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, localcontext
 import math
 from numbers import Integral
 from typing import Sequence
@@ -288,13 +288,39 @@ def score_batch_policy(
     return report
 
 
+def _exact_decimal(value: object, label: str) -> Decimal:
+    try:
+        result = Decimal(str(value))
+    except (ArithmeticError, ValueError) as error:
+        raise ValueError(f"{label} must be a finite decimal") from error
+    if not result.is_finite():
+        raise ValueError(f"{label} must be a finite decimal")
+    return result
+
+
+def _sum_decimal_points(values: Sequence[Decimal], rows: int) -> tuple[Decimal, Decimal]:
+    """Add scored decimal totals without applying the default 28-digit context."""
+
+    precision = (
+        max(value.adjusted() for value in values)
+        - min(value.as_tuple().exponent for value in values)
+        + len(str(len(values)))
+        + len(str(rows))
+        + 2
+    )
+    with localcontext() as context:
+        context.prec = max(context.prec, precision)
+        points = sum(values, Decimal("0"))
+        return points, points / Decimal(rows)
+
+
 def admit_inner_candidate(reports: Sequence[dict[str, object]]) -> dict[str, object]:
     """Require every official tier check across the four routed inner batches."""
 
     if len(reports) != 4:
         raise ValueError("inner admission requires exactly four batch reports")
     checks = []
-    points = 0.0
+    point_values = []
     rows = 0
     for fold, report in enumerate(reports):
         tiers = report["tiers"]
@@ -303,7 +329,9 @@ def admit_inner_candidate(reports: Sequence[dict[str, object]]) -> dict[str, obj
             int(tiers[tier]["num_episodes"]) != fold_rows for tier in TIERS
         ):
             raise ValueError("inner reports require aligned positive tier row counts")
-        points += float(report["final_weighted_points_total"])
+        point_values.append(
+            _exact_decimal(report["final_weighted_points_total"], "final weighted points")
+        )
         rows += fold_rows
         for tier in TIERS:
             metrics = tiers[tier]
@@ -312,10 +340,11 @@ def admit_inner_candidate(reports: Sequence[dict[str, object]]) -> dict[str, obj
                     "fold": fold,
                     "tier": tier,
                     "budget_passed": bool(metrics["budget_passed"]),
-                    "actual_ratio": float(metrics["actual_ratio"]),
+                    "actual_ratio": _exact_decimal(metrics["actual_ratio"], "actual ratio"),
                 }
             )
     passed_checks = sum(check["budget_passed"] for check in checks)
+    points, official_score = _sum_decimal_points(point_values, rows)
     return {
         "admitted": passed_checks == len(checks),
         "passed_checks": passed_checks,
@@ -324,7 +353,7 @@ def admit_inner_candidate(reports: Sequence[dict[str, object]]) -> dict[str, obj
         "maximum_actual_ratio": max(check["actual_ratio"] for check in checks),
         "points": points,
         "rows": rows,
-        "official_score": points / rows,
+        "official_score": official_score,
     }
 
 
@@ -384,8 +413,8 @@ def select_inner_multiplier(
             admission = evaluation["admission"]
             if admission["admitted"]:
                 candidates.append((
-                    -float(admission["official_score"]),
-                    float(admission["maximum_actual_ratio"]),
+                    _exact_decimal(admission["official_score"], "official score").copy_negate(),
+                    _exact_decimal(admission["maximum_actual_ratio"], "maximum actual ratio"),
                     ax31,
                     think,
                     evaluation,

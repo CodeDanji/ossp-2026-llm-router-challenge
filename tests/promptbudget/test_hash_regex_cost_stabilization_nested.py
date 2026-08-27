@@ -157,11 +157,56 @@ class HashRegexCostStabilizationNestedTests(unittest.TestCase):
         self.assertFalse(result["admitted"])
         self.assertEqual(11, result["passed_checks"])
         self.assertEqual(12, result["required_checks"])
-        self.assertEqual(4.06, result["points"])
+        self.assertEqual(Decimal("4.06"), result["points"])
         self.assertEqual(8, result["rows"])
-        self.assertEqual(1.03, result["maximum_actual_ratio"])
+        self.assertEqual(Decimal("1.03"), result["maximum_actual_ratio"])
         self.assertEqual(12, len(result["checks"]))
         self.assertFalse(result["checks"][6]["budget_passed"])
+
+    def test_inner_admission_preserves_exact_decimal_points_and_ratios(self):
+        reports = [
+            self._inner_report(1, Decimal("1.0000000000000000000000000000000000000001")),
+            self._inner_report(1, Decimal("1.0000000000000000000000000000000000000002")),
+            self._inner_report(1, Decimal("1.0000000000000000000000000000000000000003")),
+            self._inner_report(1, Decimal("1.0000000000000000000000000000000000000004")),
+        ]
+
+        result = nested.admit_inner_candidate(reports)
+
+        self.assertEqual(
+            Decimal("4.0000000000000000000000000000000000000010"),
+            result["points"],
+        )
+        self.assertEqual(
+            Decimal("1.0000000000000000000000000000000000000004"),
+            result["maximum_actual_ratio"],
+        )
+        self.assertIsInstance(result["official_score"], Decimal)
+        self.assertIsInstance(result["checks"][0]["actual_ratio"], Decimal)
+
+    def test_select_inner_multiplier_ranks_scores_beyond_float_precision(self):
+        data = self._grouped_policy_data(8)
+        preferred = (1.10, 1.00)
+
+        def evaluated(_data, _outer_train, _seed, pair):
+            score = Decimal("0.4")
+            if pair == (1.00, 1.00):
+                score = Decimal("0.5000000000000000000000000000000000000001")
+            if pair == preferred:
+                score = Decimal("0.5000000000000000000000000000000000000002")
+            return {
+                "admission": {
+                    "admitted": True,
+                    "official_score": score,
+                    "maximum_actual_ratio": Decimal("1.0"),
+                },
+                "inner_folds": (),
+            }
+
+        with mock.patch.object(nested, "evaluate_inner_pair", side_effect=evaluated):
+            result = nested.select_inner_multiplier(data, tuple(range(8)), seed=137)
+
+        self.assertEqual(preferred, result["pair"])
 
     def test_inner_pair_uses_four_grouped_fold_reports_not_a_pooled_route(self):
         data = self._grouped_policy_data(8)
