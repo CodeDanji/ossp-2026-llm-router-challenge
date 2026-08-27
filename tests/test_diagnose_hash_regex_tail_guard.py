@@ -35,7 +35,13 @@ class DiagnoseHashRegexTailGuardTest(unittest.TestCase):
                 "--outcomes", "data/train/outcomes.json",
                 "--report", str(report),
             ))
-            result = cli.diagnose(args)
+            batch = type("Batch", (), {"split": "train"})()
+            with mock.patch.object(cli, "load_input", return_value=batch), mock.patch.object(
+                cli, "load_outcomes", return_value=batch
+            ), mock.patch.object(cli, "validate_batches", return_value=(1760, None)), mock.patch.object(
+                cli, "_sha256", return_value="hash"
+            ):
+                result = cli.diagnose(args)
 
         self.assertEqual("dry-run", result["mode"])
         self.assertFalse(report.exists())

@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 TOOLS = Path(__file__).parents[1] / "tools"
@@ -37,7 +38,13 @@ class EvaluateHashRegexTailGuardNestedTest(unittest.TestCase):
                 "--diagnostic", "build/hash-regex-tail-guard/tail-diagnostic.json",
                 "--report", str(report),
             ))
-            result = cli.evaluate(args)
+            batch = type("Batch", (), {"split": "train"})()
+            with mock.patch.object(cli, "_sha256", return_value="hash"), mock.patch.object(
+                cli, "_load_diagnostic", return_value={}
+            ), mock.patch.object(cli, "load_input", return_value=batch), mock.patch.object(
+                cli, "load_outcomes", return_value=batch
+            ), mock.patch.object(cli, "validate_batches", return_value=(1760, None)):
+                result = cli.evaluate(args)
 
         self.assertEqual("dry-run", result["mode"])
         self.assertFalse(report.exists())
