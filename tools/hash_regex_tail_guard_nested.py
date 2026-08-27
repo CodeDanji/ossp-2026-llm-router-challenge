@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from bisect import bisect_right
 from dataclasses import dataclass
+from decimal import Decimal
 import math
 from numbers import Integral
 
@@ -221,3 +222,151 @@ def diagnostic_status(reports: dict[int, dict[str, dict[str, object]]]) -> str:
         if passing >= _HETEROGENEITY_REQUIRED_SEEDS:
             return "tail-signal-present"
     return "tail-no-signal"
+
+
+def score_guarded_batch_policy(
+    data: v32.EvaluationData,
+    indices: tuple[int, ...],
+    scores: np.ndarray,
+    base_log_costs: np.ndarray,
+    guard: TailGuard,
+) -> dict[str, object]:
+    logs = _log_cost_matrix(base_log_costs)
+    with np.errstate(over="ignore", invalid="ignore"):
+        base_costs = np.exp(logs)
+    if not np.isfinite(base_costs).all() or np.any(base_costs <= 0.0):
+        raise ValueError("base log costs must exponentiate to finite positive costs")
+    guarded = apply_tail_guard(apply_ordering_clamp(base_costs), logs, guard)
+    report = v32.score_batch_policy(
+        data, indices, scores, np.log(guarded), (1.0, 1.0)
+    )
+    report["guard_metadata"] = {
+        "light_multiplier": 1.0,
+        "ax31_edges": guard.ax31_edges,
+        "think_edges": guard.think_edges,
+        "ax31_log_guards": guard.ax31_log_guards,
+        "think_log_guards": guard.think_log_guards,
+    }
+    return report
+
+
+def evaluate_inner_guard(
+    data: v32.EvaluationData, outer_train: tuple[int, ...], seed: int = 137
+) -> dict[str, object]:
+    selected = _partition_indices(data, tuple(outer_train))
+    reports = []
+    inner_folds = []
+    for fold in grouped_folds(tuple(data.groups[index] for index in selected), folds=4, seed=seed):
+        train_indices = tuple(selected[index] for index in fold.train_indices)
+        validation_indices = tuple(selected[index] for index in fold.validation_indices)
+        guard = fit_tail_guard(data, train_indices, seed)
+        quality = v32.fit_raw_quality_heads(
+            data.matrix[list(train_indices)], data.scores[list(train_indices)]
+        )
+        costs = v32.fit_log_cost_heads(
+            data.matrix[list(train_indices)], data.log_costs[list(train_indices)]
+        )
+        report = score_guarded_batch_policy(
+            data,
+            validation_indices,
+            v32.predict_heads(quality, data.matrix[list(validation_indices)]),
+            v32.predict_heads(costs, data.matrix[list(validation_indices)]),
+            guard,
+        )
+        reports.append(report)
+        inner_folds.append(
+            {
+                "train_indices": train_indices,
+                "validation_indices": validation_indices,
+                "guard": guard,
+                "report": report,
+            }
+        )
+    return {
+        "inner_folds": tuple(inner_folds),
+        "pooled_for_routing": False,
+        "admission": v32.admit_inner_candidate(reports),
+    }
+
+
+def select_inner_guard(
+    data: v32.EvaluationData, outer_train: tuple[int, ...], seed: int
+) -> dict[str, object]:
+    evaluation = evaluate_inner_guard(data, outer_train, seed)
+    if not evaluation["admission"]["admitted"]:
+        return {"status": "no-admitted-tail-guard", "route": "all-light", "guard": None}
+    return {
+        "status": "admitted-tail-guard",
+        "route": "tail-guarded",
+        "admission": evaluation["admission"],
+        "inner_folds": evaluation["inner_folds"],
+        "pooled_for_routing": False,
+    }
+
+
+def evaluate_outer_guard_fold(
+    data: v32.EvaluationData,
+    outer_train: tuple[int, ...],
+    outer_test: tuple[int, ...],
+    seed: int = 137,
+    fold: int = 0,
+) -> dict[str, object]:
+    train_indices = _partition_indices(data, tuple(outer_train))
+    test_indices = _partition_indices(data, tuple(outer_test))
+    if set(train_indices) & set(test_indices) or set(data.groups[index] for index in train_indices) & set(
+        data.groups[index] for index in test_indices
+    ):
+        raise ValueError("outer train and test partitions must be group-disjoint")
+    selection = select_inner_guard(data, train_indices, seed)
+    quality = v32.fit_raw_quality_heads(data.matrix[list(train_indices)], data.scores[list(train_indices)])
+    costs = v32.fit_log_cost_heads(data.matrix[list(train_indices)], data.log_costs[list(train_indices)])
+    score_prediction = v32.predict_heads(quality, data.matrix[list(test_indices)])
+    cost_prediction = v32.predict_heads(costs, data.matrix[list(test_indices)])
+    raw_report = v32.score_batch_policy(data, test_indices, score_prediction, cost_prediction, (1.0, 1.0))
+    fallback = selection["route"] == "all-light"
+    guard = None
+    if fallback:
+        selected_report = v32._score_all_light_policy(data, test_indices)
+    else:
+        guard = fit_tail_guard(data, train_indices, seed)
+        selected_report = score_guarded_batch_policy(
+            data, test_indices, score_prediction, cost_prediction, guard
+        )
+    selected_non_light = v32._final_non_light(selected_report)
+    raw_non_light = v32._final_non_light(raw_report)
+    return {
+        "seed": seed,
+        "fold": fold,
+        "outer_train_indices": train_indices,
+        "outer_test_indices": test_indices,
+        "inner_selection": selection,
+        "route": selection["route"],
+        "fallback_all_light": fallback,
+        "guard": guard,
+        "selected_report": selected_report,
+        "outer_test_evaluations": 1,
+        "selected_final_non_light": selected_non_light,
+        "tier_retention": selected_non_light["tiers"],
+        "total_retention": selected_non_light["total"],
+        "raw_comparator": {
+            "pair": (1.0, 1.0),
+            "report": raw_report,
+            "final_non_light": raw_non_light,
+        },
+    }
+
+
+def aggregate_outer_guard_folds(folds: list[dict[str, object]]) -> dict[str, object]:
+    aggregate = v32.aggregate_outer_folds(folds)
+    retention = aggregate["retention"]["non_light_retention"]
+    if not aggregate["promotion"]["outer_45_of_45_pass"]:
+        status = "cost-calibration-no-go"
+    elif aggregate["fallback_all_light_folds"]:
+        status = "safe-but-collapse"
+    elif retention["not_applicable"]:
+        status = "safe-but-collapse"
+    elif retention["value"] < Decimal("0.20"):
+        status = "safe-but-collapse"
+    else:
+        status = "safe-candidate"
+    return {**aggregate, "status": status}

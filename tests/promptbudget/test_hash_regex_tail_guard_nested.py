@@ -1,6 +1,8 @@
 import math
 import unittest
 import dataclasses
+from decimal import Decimal
+from unittest import mock
 
 import numpy as np
 
@@ -77,6 +79,49 @@ class HashRegexTailGuardNestedTests(unittest.TestCase):
         }
 
         self.assertEqual("tail-signal-present", nested.diagnostic_status(reports))
+
+    def test_guarded_policy_keeps_light_and_passes_guarded_cost_to_premium_fill(self):
+        data = self._data(4)
+        guard = nested.TailGuard((0.0, 1.0, 2.0), (0.0, 1.0, 2.0), (0.0,) * 4, (0.0,) * 4)
+        report = {"tiers": {"premium": {"includes_premium_fill": True}}}
+        with mock.patch.object(nested.v32, "score_batch_policy", return_value=report) as scorer:
+            result = nested.score_guarded_batch_policy(
+                data, (0, 1, 2, 3), np.zeros((4, 3)), np.zeros((4, 3)), guard
+            )
+
+        self.assertEqual(1.0, result["guard_metadata"]["light_multiplier"])
+        self.assertTrue(result["tiers"]["premium"]["includes_premium_fill"])
+        self.assertEqual((1.0, 1.0), scorer.call_args.args[4])
+
+    def test_inner_guard_admission_requires_twelve_independent_actual_checks(self):
+        report = {
+            "final_weighted_points_total": "1.0",
+            "tiers": {
+                tier: {"budget_passed": True, "actual_ratio": "1.0", "num_episodes": 1}
+                for tier in ("fast", "balanced", "premium")
+            },
+        }
+        guard = nested.TailGuard((0.0, 0.1, 0.2), (0.0, 0.1, 0.2), (0.0,) * 4, (0.0,) * 4)
+        with mock.patch.object(nested, "fit_tail_guard", return_value=guard), mock.patch.object(
+            nested, "score_guarded_batch_policy", return_value=report
+        ):
+            result = nested.evaluate_inner_guard(self._data(8), tuple(range(8)), seed=137)
+
+        self.assertEqual(4, len(result["inner_folds"]))
+        self.assertEqual(12, result["admission"]["required_checks"])
+        self.assertFalse(result["pooled_for_routing"])
+
+    def test_promotion_requires_no_fallback_and_twenty_percent_retention(self):
+        base = {
+            "promotion": {"outer_45_of_45_pass": True},
+            "fallback_all_light_folds": 0,
+            "retention": {"non_light_retention": {"not_applicable": False, "value": Decimal("0.19")}},
+        }
+        with mock.patch.object(nested.v32, "aggregate_outer_folds", return_value=base):
+            self.assertEqual("safe-but-collapse", nested.aggregate_outer_guard_folds([{}])["status"])
+        base["retention"]["non_light_retention"]["value"] = Decimal("0.20")
+        with mock.patch.object(nested.v32, "aggregate_outer_folds", return_value=base):
+            self.assertEqual("safe-candidate", nested.aggregate_outer_guard_folds([{}])["status"])
 
     @staticmethod
     def _data(rows):
