@@ -99,7 +99,7 @@ Screen은 새로 고정한 4-fold grouped Train split(seed `137`)에서 수행�
 
 ## 7. 조건부 확대 검증과 제출
 
-screen winner가 있을 때만 focused test, one-fold smoke, 그리고 한 번의 full grouped nested evaluation을 실행한다. full evaluation의 승격 조건은 v3.3과 동일하게 outer `45/45` actual cap pass 및 fallback `0`이며, v4 추가 gate로 cap-neutral quality가 frozen v3.3보다 양수여야 한다. 하나라도 실패하면 winner를 finalization하지 않는다.
+screen winner가 있을 때만 focused test, one-fold smoke, 그리고 한 번의 full grouped nested evaluation을 실행한다. full evaluation의 승격 조건은 v3.3과 동일하게 outer `45/45` actual cap pass 및 fallback `0`이며, v4 추가 gate로 mean cap-neutral quality delta가 frozen v3.3보다 **최소 `+0.005`**여야 한다. 따라서 미세한 양수 개선만으로는 v3.3을 대체하지 않는다. 하나라도 실패하면 winner를 finalization하지 않는다.
 
 full gate를 모두 통과한 경우에만 새 isolated artifact를 동결하고 Dev sanity를 정확히 한 번 수행한다. Dev는 tuning 근거가 아니며, Dev cap/parser/runtime failure 시 v3.3 artifact로 되돌아간다.
 
