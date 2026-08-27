@@ -9,7 +9,17 @@ import math
 import numpy as np
 
 import hash_regex
-from ossp_router.protocol import MODEL_IDS, InputBatch, Outcome, OutcomeBatch, RoutingPolicy
+from ossp_router.protocol import (
+    MODEL_IDS,
+    TIERS,
+    Decision,
+    InputBatch,
+    Outcome,
+    OutcomeBatch,
+    RoutingPolicy,
+    Submission,
+)
+from ossp_router.scoring import score_submissions
 from promptbudget.input_adapter import to_prompt_record
 from promptbudget.safety import canonical_content_group
 
@@ -135,3 +145,122 @@ def apply_cost_multipliers(costs: np.ndarray, *, ax31: float, think: float) -> n
     result[:, 1] = np.maximum(result[:, 1], result[:, 0] * (1.0 + 1e-12))
     result[:, 2] = np.maximum(result[:, 2], result[:, 1] * (1.0 + 1e-12))
     return result
+
+
+def _slice_batches(
+    data: EvaluationData, indices: tuple[int, ...]
+) -> tuple[InputBatch, OutcomeBatch]:
+    episodes = tuple(data.inputs.episodes[index] for index in indices)
+    identifiers = {episode.episode_id for episode in episodes}
+    outcomes = tuple(
+        outcome
+        for outcome in data.outcomes.outcomes
+        if outcome.episode_id in identifiers
+    )
+    return (
+        InputBatch(
+            data.inputs.schema_version,
+            data.inputs.challenge_id,
+            data.inputs.split,
+            episodes,
+        ),
+        OutcomeBatch(
+            data.outcomes.schema_version,
+            data.outcomes.challenge_id,
+            data.outcomes.split,
+            outcomes,
+        ),
+    )
+
+
+def _prediction_rows(
+    scores: np.ndarray, log_costs: np.ndarray, upgrade_multipliers: tuple[float, float]
+) -> tuple[list[dict[str, float]], list[dict[str, float]]]:
+    score_array = _targets(scores, len(scores), "scores")
+    log_cost_array = _targets(log_costs, len(score_array), "log_costs")
+    costs = np.exp(np.clip(log_cost_array, -50.0, 50.0))
+    costs[:, 1] = np.maximum(costs[:, 1], costs[:, 0] * (1.0 + 1e-12))
+    costs[:, 2] = np.maximum(costs[:, 2], costs[:, 1] * (1.0 + 1e-12))
+    costs = apply_cost_multipliers(
+        costs, ax31=upgrade_multipliers[0], think=upgrade_multipliers[1]
+    )
+    return (
+        [
+            {
+                model_id: min(1.0, max(0.0, float(score[index])))
+                for index, model_id in enumerate(MODEL_IDS)
+            }
+            for score in score_array
+        ],
+        [
+            {model_id: float(cost[index]) for index, model_id in enumerate(MODEL_IDS)}
+            for cost in costs
+        ],
+    )
+
+
+def score_batch_policy(
+    data: EvaluationData,
+    indices: tuple[int, ...],
+    scores: np.ndarray,
+    log_costs: np.ndarray,
+    upgrade_multipliers: tuple[float, float],
+) -> dict[str, object]:
+    """Route every tier and score the final submissions through the official scorer."""
+
+    selected_indices = tuple(indices)
+    if not selected_indices:
+        raise ValueError("indices must be non-empty")
+    score_rows, cost_rows = _prediction_rows(
+        scores, log_costs, upgrade_multipliers
+    )
+    if len(selected_indices) != len(score_rows):
+        raise ValueError("prediction rows and indices must align")
+
+    selected: dict[str, tuple[str, ...]] = {}
+    predicted_ratios: dict[str, float] = {}
+    for tier in TIERS:
+        choices, predicted_ratio = hash_regex.select_models(
+            score_rows,
+            cost_rows,
+            budget_multiplier=float(data.policy.tiers[tier].budget_multiplier),
+            safety_ratio=1.0,
+        )
+        if tier == "premium":
+            filled, predicted_ratio = hash_regex.fill_ax31_upgrades(
+                choices,
+                score_rows,
+                cost_rows,
+                budget_multiplier=float(data.policy.tiers[tier].budget_multiplier),
+                safety_ratio=hash_regex.PREMIUM_AX31_FILL_SAFETY_RATIO,
+            )
+            choices = filled
+        selected[tier] = choices
+        predicted_ratios[tier] = predicted_ratio
+
+    inputs, outcomes = _slice_batches(data, selected_indices)
+    submissions = tuple(
+        Submission(
+            schema_version=inputs.schema_version,
+            challenge_id=inputs.challenge_id,
+            policy_id=data.policy.policy_id,
+            split=inputs.split,
+            tier=tier,
+            decisions=tuple(
+                Decision(episode.episode_id, model_id)
+                for episode, model_id in zip(inputs.episodes, selected[tier])
+            ),
+        )
+        for tier in TIERS
+    )
+    report = score_submissions(inputs, outcomes, submissions, data.policy)
+    report["tiers"] = {
+        tier: {
+            **report["tiers"][tier],
+            "actual_ratio": report["tiers"][tier]["budget_ratio"],
+            "predicted_ratio": predicted_ratios[tier],
+            "includes_premium_fill": tier == "premium",
+        }
+        for tier in TIERS
+    }
+    return report
