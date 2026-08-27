@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 import math
 from numbers import Integral
+from typing import Sequence
 
 import numpy as np
 
@@ -22,7 +23,7 @@ from ossp_router.protocol import (
 )
 from ossp_router.scoring import score_submissions
 from promptbudget.input_adapter import to_prompt_record
-from promptbudget.safety import canonical_content_group
+from promptbudget.safety import canonical_content_group, grouped_folds
 
 
 RIDGE_ALPHA = 100.0
@@ -285,3 +286,118 @@ def score_batch_policy(
         for tier in TIERS
     }
     return report
+
+
+def admit_inner_candidate(reports: Sequence[dict[str, object]]) -> dict[str, object]:
+    """Require every official tier check across the four routed inner batches."""
+
+    if len(reports) != 4:
+        raise ValueError("inner admission requires exactly four batch reports")
+    checks = []
+    points = 0.0
+    rows = 0
+    for fold, report in enumerate(reports):
+        tiers = report["tiers"]
+        fold_rows = int(tiers["fast"]["num_episodes"])
+        if fold_rows <= 0 or any(
+            int(tiers[tier]["num_episodes"]) != fold_rows for tier in TIERS
+        ):
+            raise ValueError("inner reports require aligned positive tier row counts")
+        points += float(report["final_weighted_points_total"])
+        rows += fold_rows
+        for tier in TIERS:
+            metrics = tiers[tier]
+            checks.append(
+                {
+                    "fold": fold,
+                    "tier": tier,
+                    "budget_passed": bool(metrics["budget_passed"]),
+                    "actual_ratio": float(metrics["actual_ratio"]),
+                }
+            )
+    passed_checks = sum(check["budget_passed"] for check in checks)
+    return {
+        "admitted": passed_checks == len(checks),
+        "passed_checks": passed_checks,
+        "required_checks": len(checks),
+        "checks": tuple(checks),
+        "maximum_actual_ratio": max(check["actual_ratio"] for check in checks),
+        "points": points,
+        "rows": rows,
+        "official_score": points / rows,
+    }
+
+
+def evaluate_inner_pair(
+    data: EvaluationData,
+    outer_train: Sequence[int],
+    seed: int = 137,
+    pair: tuple[float, float] = (1.10, 1.25),
+) -> dict[str, object]:
+    """Cross-fit one multiplier pair and route each grouped validation batch once."""
+
+    selected = _validated_indices(data, tuple(outer_train))
+    local_groups = tuple(data.groups[index] for index in selected)
+    reports = []
+    inner_folds = []
+    for fold in grouped_folds(local_groups, folds=4, seed=seed):
+        train_indices = tuple(selected[index] for index in fold.train_indices)
+        validation_indices = tuple(selected[index] for index in fold.validation_indices)
+        quality = fit_raw_quality_heads(
+            data.matrix[list(train_indices)], data.scores[list(train_indices)]
+        )
+        costs = fit_log_cost_heads(
+            data.matrix[list(train_indices)], data.log_costs[list(train_indices)]
+        )
+        report = score_batch_policy(
+            data,
+            validation_indices,
+            predict_heads(quality, data.matrix[list(validation_indices)]),
+            predict_heads(costs, data.matrix[list(validation_indices)]),
+            pair,
+        )
+        reports.append(report)
+        inner_folds.append(
+            {
+                "train_indices": train_indices,
+                "validation_indices": validation_indices,
+                "report": report,
+            }
+        )
+    return {
+        "pair": pair,
+        "inner_folds": tuple(inner_folds),
+        "pooled_for_routing": False,
+        "admission": admit_inner_candidate(reports),
+    }
+
+
+def select_inner_multiplier(
+    data: EvaluationData, outer_train: Sequence[int], seed: int
+) -> dict[str, object]:
+    """Pick the admitted multiplier pair using only grouped outer-train folds."""
+
+    candidates = []
+    for ax31 in (1.00, 1.10, 1.25):
+        for think in (1.00, 1.25, 1.50):
+            evaluation = evaluate_inner_pair(data, outer_train, seed, (ax31, think))
+            admission = evaluation["admission"]
+            if admission["admitted"]:
+                candidates.append((
+                    -float(admission["official_score"]),
+                    float(admission["maximum_actual_ratio"]),
+                    ax31,
+                    think,
+                    evaluation,
+                ))
+    if not candidates:
+        return {"status": "no-admitted-multiplier", "pair": None, "route": "all-light"}
+    chosen = min(candidates)
+    return {
+        "status": "admitted-multiplier",
+        "pair": (chosen[2], chosen[3]),
+        "route": "cost-multiplied",
+        "admission": chosen[4]["admission"],
+        "inner_folds": chosen[4]["inner_folds"],
+        "pooled_for_routing": False,
+    }
