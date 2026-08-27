@@ -89,6 +89,18 @@ class TailGuardSubmissionPackagingTest(unittest.TestCase):
                 json.loads(output.read_text(encoding="utf-8")),
             )
 
+    def test_entrypoint_resolves_the_runtime_root_after_docker_copy(self) -> None:
+        from container import entrypoint
+
+        self.assertEqual(
+            Path("/opt/router"),
+            entrypoint._runtime_root(Path("/opt/router/entrypoint.py")),
+        )
+        self.assertEqual(
+            ROOT,
+            entrypoint._runtime_root(ROOT / "container" / "entrypoint.py"),
+        )
+
     def test_entrypoint_script_finds_the_bundled_hash_regex_router(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "submission.json"
