@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+from bisect import bisect_right
 import json
 import math
 import re
@@ -40,6 +41,7 @@ from ossp_router.protocol import (
 
 
 ARTIFACT_TYPE = "ossp-hash-regex-linear-v1"
+TAIL_GUARD_ARTIFACT_TYPE = "ossp-hash-regex-tail-guard-v1"
 FEATURE_VERSION = 1
 DEFAULT_HASH_BINS = 256
 MIN_HASH_BINS = 16
@@ -95,6 +97,14 @@ class LinearHead:
 
 
 @dataclass(frozen=True)
+class TailCostGuard:
+    ax31_edges: Tuple[float, float, float]
+    think_edges: Tuple[float, float, float]
+    ax31_log_guards: Tuple[float, float, float, float]
+    think_log_guards: Tuple[float, float, float, float]
+
+
+@dataclass(frozen=True)
 class HashRegexArtifact:
     hash_bins: int
     feature_mean: Tuple[float, ...]
@@ -105,6 +115,7 @@ class HashRegexArtifact:
     policy_id: str
     policy_digest: str
     training_summary: Mapping[str, Any]
+    tail_cost_guard: Optional[TailCostGuard] = None
 
 
 @dataclass(frozen=True)
@@ -226,6 +237,30 @@ def _head(value: Any, length: int, label: str) -> LinearHead:
     )
 
 
+def _tail_guard(value: Any) -> TailCostGuard:
+    raw = _object(value, "artifact.tail_cost_guard")
+    _exact_keys(raw, ("bucket_count", "quantile", "models"), "artifact.tail_cost_guard")
+    if _integer(raw["bucket_count"], "artifact.tail_cost_guard.bucket_count", 4, 4) != 4:
+        raise ProtocolError("tail guard bucket count must be four")
+    if _number(raw["quantile"], "artifact.tail_cost_guard.quantile") != 0.90:
+        raise ProtocolError("tail guard quantile must be 0.90")
+    models = _object(raw["models"], "artifact.tail_cost_guard.models")
+    if set(models) != {"ax31", "axk1-think"}:
+        raise ProtocolError("tail guard models must be ax31 and axk1-think")
+    parsed = {}
+    for name in ("ax31", "axk1-think"):
+        item = _object(models[name], f"artifact.tail_cost_guard.models.{name}")
+        _exact_keys(item, ("edges", "log_guards"), f"artifact.tail_cost_guard.models.{name}")
+        edges = _vector(item["edges"], 3, f"artifact.tail_cost_guard.models.{name}.edges")
+        guards = _vector(item["log_guards"], 4, f"artifact.tail_cost_guard.models.{name}.log_guards")
+        if tuple(sorted(edges)) != edges or any(value < 0 for value in guards):
+            raise ProtocolError("tail guard edges must be ordered and guards nonnegative")
+        parsed[name] = (edges, guards)
+    return TailCostGuard(
+        parsed["ax31"][0], parsed["axk1-think"][0], parsed["ax31"][1], parsed["axk1-think"][1]
+    )
+
+
 def parse_artifact(value: Any) -> HashRegexArtifact:
     root = _object(value, "artifact")
     expected = (
@@ -245,8 +280,11 @@ def parse_artifact(value: Any) -> HashRegexArtifact:
         "tier_safety_ratios",
         "training_summary",
     )
+    artifact_type = root.get("artifact_type")
+    if artifact_type == TAIL_GUARD_ARTIFACT_TYPE:
+        expected = (*expected, "tail_cost_guard")
     _exact_keys(root, expected, "artifact")
-    if root["artifact_type"] != ARTIFACT_TYPE:
+    if artifact_type not in (ARTIFACT_TYPE, TAIL_GUARD_ARTIFACT_TYPE):
         raise ProtocolError("지원하지 않는 hash-regex artifact_type입니다.")
     if (
         _integer(root["schema_version"], "artifact.schema_version", 1, 1) != 1
@@ -316,6 +354,7 @@ def parse_artifact(value: Any) -> HashRegexArtifact:
         policy_id=policy_id,
         policy_digest=policy_digest,
         training_summary=dict(training_summary),
+        tail_cost_guard=_tail_guard(root["tail_cost_guard"]) if artifact_type == TAIL_GUARD_ARTIFACT_TYPE else None,
     )
 
 
@@ -344,10 +383,12 @@ def predict_episode(
         model_id: min(1.0, max(0.0, _linear(artifact.score_heads[model_id], standardized)))
         for model_id in MODEL_IDS
     }
+    base_logs = {
+        model_id: _linear(artifact.log_cost_heads[model_id], standardized)
+        for model_id in MODEL_IDS
+    }
     costs = {
-        model_id: math.exp(
-            min(50.0, max(-50.0, _linear(artifact.log_cost_heads[model_id], standardized)))
-        )
+        model_id: math.exp(min(50.0, max(-50.0, base_logs[model_id])))
         for model_id in MODEL_IDS
     }
     light = costs[MODEL_IDS[0]]
@@ -355,6 +396,12 @@ def predict_episode(
     costs[MODEL_IDS[2]] = max(
         costs[MODEL_IDS[2]], costs[MODEL_IDS[1]] * (1.0 + 1e-12)
     )
+    guard = artifact.tail_cost_guard
+    if guard is not None:
+        costs[MODEL_IDS[1]] *= math.exp(guard.ax31_log_guards[bisect_right(guard.ax31_edges, base_logs[MODEL_IDS[1]])])
+        costs[MODEL_IDS[2]] *= math.exp(guard.think_log_guards[bisect_right(guard.think_edges, base_logs[MODEL_IDS[2]])])
+        costs[MODEL_IDS[1]] = max(costs[MODEL_IDS[1]], costs[MODEL_IDS[0]] * (1.0 + 1e-12))
+        costs[MODEL_IDS[2]] = max(costs[MODEL_IDS[2]], costs[MODEL_IDS[1]] * (1.0 + 1e-12))
     return scores, costs
 
 

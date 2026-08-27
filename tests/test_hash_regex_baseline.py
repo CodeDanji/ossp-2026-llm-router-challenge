@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import pathlib
 import sys
 import tempfile
 import unittest
+import json
 
 from ossp_router.heuristic import episode_text
 from ossp_router.protocol import (
@@ -78,6 +80,23 @@ def _by_content(inputs, submission):
 
 @unittest.skipUnless(train_hash_regex.np is not None, "NumPy가 설치되지 않음")
 class HashRegexBaselineTest(unittest.TestCase):
+    def test_tail_guard_artifact_uses_base_log_bucket_before_cost_order_clamp(self):
+        value = json.loads((ROOT / "baselines/hash-regex-public.v1.json").read_text(encoding="utf-8"))
+        value["artifact_type"] = "ossp-hash-regex-tail-guard-v1"
+        value["tail_cost_guard"] = {
+            "bucket_count": 4,
+            "quantile": 0.90,
+            "models": {
+                "ax31": {"edges": [-100.0, -99.0, 100.0], "log_guards": [0.0, 0.0, 0.5, 0.5]},
+                "axk1-think": {"edges": [-100.0, -99.0, 100.0], "log_guards": [0.0, 0.0, 0.0, 0.0]},
+            },
+        }
+        artifact = hash_regex.parse_artifact(value)
+        base = hash_regex.parse_artifact(json.loads((ROOT / "baselines/hash-regex-public.v1.json").read_text(encoding="utf-8")))
+        _scores, costs = hash_regex.predict_episode(self.inputs.episodes[0], artifact)
+        _scores, base_costs = hash_regex.predict_episode(self.inputs.episodes[0], base)
+
+        self.assertAlmostEqual(base_costs["ax31"] * math.exp(0.5), costs["ax31"])
     @classmethod
     def setUpClass(cls) -> None:
         cls.temporary = tempfile.TemporaryDirectory()
