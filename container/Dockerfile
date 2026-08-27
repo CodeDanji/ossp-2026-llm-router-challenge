@@ -16,6 +16,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     TMPDIR=/tmp
 
 COPY --chown=65532:65532 src container/entrypoint.py /opt/router/
+COPY --chown=65532:65532 baselines /opt/router/baselines
+COPY --chown=65532:65532 build/hash-regex-tail-guard/final-artifact.json build/hash-regex-tail-guard/manifest.json /opt/router/build/hash-regex-tail-guard
 
 WORKDIR /opt/router
 
