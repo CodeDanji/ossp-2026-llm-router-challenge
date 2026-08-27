@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "challenge_id": "ossp-2026-llm-router-challenge",
+  "repository_url": "https://github.com/CodeDanji/ossp-2026-llm-router-challenge",
+  "commit_sha": "c40433d481e55af2ff2f0d00823fc57b8b704ef1",
+  "image_digest": "ghcr.io/codedanji/ossp-2026-llm-router-challenge@sha256:f0456295dc07e3f56aaaa952e4505055cdcd43bde53ce74fa4f781d94f6b3641",
+  "primary_license": "Apache-2.0"
+}
