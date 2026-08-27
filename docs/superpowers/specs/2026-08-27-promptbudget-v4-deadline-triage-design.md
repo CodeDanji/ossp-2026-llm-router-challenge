@@ -113,3 +113,14 @@ full gate를 모두 통과한 경우에만 새 isolated artifact를 동결하고
 - v3.3 runtime: `baselines/hash_regex.py`
 
 모든 v4 report는 `build/hash-regex-v4-deadline-triage/` 아래에 생성한다. public fallback 또는 frozen v3.3 artifact는 이 경로의 산출물로 교체하지 않는다.
+
+## 9. 실행 결과 (2026-08-27)
+
+수정된 Train-only screen은 v3.3 finalization과 동일한 Train input/outcome hash (`029a0f…8628ac4`, `97a5a7…12a4ba`)로 한 번 실행됐다. 유효 report는 `build/hash-regex-v4-deadline-triage/screening-corrected.json`이며 terminal status는 `no-safe-recovery-candidate`다.
+
+- row-level diagnostic은 Fast 235개, Balanced 149개의 actual-slack-recoverable AX31 pool을 확인했다.
+- `fast-ax31-fill`은 12/12 actual cap pass와 fallback 0을 달성했지만 Fast pooled cap-neutral quality delta가 정확히 `0.00`이었다.
+- `balanced-ax31-fill`은 12/12 actual cap pass와 fallback 0을 달성했지만 Balanced pooled delta가 `-0.0002840909090909090909090909091`이었다.
+- 어느 단일-tier 후보도 screen gate를 통과하지 않아 `fast-balanced-ax31-fill`은 실행하지 않았다.
+
+따라서 full nested evaluation, runtime/artifact 변경, finalization, Dev sanity는 모두 실행하지 않는다. 제출 대상은 frozen v3.3이다. 초기에 기록된 `screening.json`은 obsolete model ID 결함으로 recoverable pool을 0으로 계산한 무효 report이며, 보존만 하고 판단 근거로 사용하지 않는다.
