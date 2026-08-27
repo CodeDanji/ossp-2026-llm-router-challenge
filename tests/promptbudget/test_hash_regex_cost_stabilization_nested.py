@@ -4,6 +4,7 @@ import unittest
 
 import numpy as np
 
+import hash_regex
 import hash_regex_cost_stabilization_nested as nested
 from ossp_router.protocol import (
     MODEL_IDS,
@@ -60,6 +61,10 @@ class HashRegexCostStabilizationNestedTests(unittest.TestCase):
         for bad in (np.zeros((1, 3)), np.asarray([[1.0, -1.0, 2.0]]), np.asarray([[1.0, np.nan, 2.0]])):
             with self.assertRaises(ValueError):
                 nested.apply_cost_multipliers(bad, ax31=1.25, think=1.5)
+        with self.assertRaises(ValueError):
+            nested.apply_cost_multipliers(
+                np.asarray([[1.0, 1e20, 2e20]]), ax31=1e308, think=1.5
+            )
 
     def test_fitted_arrays_are_read_only(self):
         heads = nested.fit_raw_quality_heads(self.matrix[:4], self.scores[:4])
@@ -68,11 +73,20 @@ class HashRegexCostStabilizationNestedTests(unittest.TestCase):
 
     def test_premium_admission_scores_after_ax31_fill(self):
         data, scores, log_costs = self._policy_data()
+        score_rows, cost_rows = nested._prediction_rows(scores, log_costs, (1.0, 1.0))
+        before_fill, _ratio = hash_regex.select_models(
+            score_rows,
+            cost_rows,
+            budget_multiplier=float(data.policy.tiers["premium"].budget_multiplier),
+            safety_ratio=1.0,
+        )
         report = nested.score_batch_policy(
             data, (0, 1), scores, log_costs, (1.0, 1.0)
         )
 
+        self.assertEqual(("ax31-light", "ax31-light"), before_fill)
         self.assertTrue(report["tiers"]["premium"]["includes_premium_fill"])
+        self.assertEqual(1, report["tiers"]["premium"]["model_counts"]["ax31"])
 
     def test_premium_report_includes_fill_when_it_keeps_all_light(self):
         data, scores, log_costs = self._policy_data()
@@ -113,6 +127,15 @@ class HashRegexCostStabilizationNestedTests(unittest.TestCase):
                 for tier in ("fast", "balanced", "premium")
             },
         )
+
+    def test_complete_policy_rejects_duplicate_or_invalid_indices(self):
+        data, scores, log_costs = self._policy_data()
+        for indices in ((0, 0), (-1, 0), (0, 2)):
+            with self.subTest(indices=indices):
+                with self.assertRaises(ValueError):
+                    nested.score_batch_policy(
+                        data, indices, scores, log_costs, (1.10, 1.25)
+                    )
 
     @staticmethod
     def _policy_data():

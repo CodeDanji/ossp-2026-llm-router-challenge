@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 import math
+from numbers import Integral
 
 import numpy as np
 
@@ -140,8 +141,11 @@ def apply_cost_multipliers(costs: np.ndarray, *, ax31: float, think: float) -> n
     for name, value in (("ax31", ax31), ("think", think)):
         if not math.isfinite(float(value)) or float(value) <= 0.0:
             raise ValueError(f"{name} multiplier must be finite and positive")
-    result[:, 1] *= float(ax31)
-    result[:, 2] *= float(think)
+    with np.errstate(over="ignore", invalid="ignore"):
+        result[:, 1] *= float(ax31)
+        result[:, 2] *= float(think)
+    if not np.isfinite(result).all():
+        raise ValueError("scaled costs must be finite")
     result[:, 1] = np.maximum(result[:, 1], result[:, 0] * (1.0 + 1e-12))
     result[:, 2] = np.maximum(result[:, 2], result[:, 1] * (1.0 + 1e-12))
     return result
@@ -171,6 +175,22 @@ def _slice_batches(
             outcomes,
         ),
     )
+
+
+def _validated_indices(
+    data: EvaluationData, indices: tuple[int, ...]
+) -> tuple[int, ...]:
+    selected = tuple(indices)
+    if not selected:
+        raise ValueError("indices must be non-empty")
+    if any(isinstance(index, bool) or not isinstance(index, Integral) for index in selected):
+        raise ValueError("indices must be integers")
+    selected = tuple(int(index) for index in selected)
+    if len(set(selected)) != len(selected):
+        raise ValueError("indices must be unique")
+    if any(index < 0 or index >= len(data.inputs.episodes) for index in selected):
+        raise ValueError("indices must reference evaluation episodes")
+    return selected
 
 
 def _prediction_rows(
@@ -208,9 +228,7 @@ def score_batch_policy(
 ) -> dict[str, object]:
     """Route every tier and score the final submissions through the official scorer."""
 
-    selected_indices = tuple(indices)
-    if not selected_indices:
-        raise ValueError("indices must be non-empty")
+    selected_indices = _validated_indices(data, indices)
     score_rows, cost_rows = _prediction_rows(
         scores, log_costs, upgrade_multipliers
     )
