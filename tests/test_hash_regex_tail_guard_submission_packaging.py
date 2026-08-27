@@ -45,7 +45,7 @@ class TailGuardSubmissionPackagingTest(unittest.TestCase):
         self.assertIn(
             "COPY --chown=65532:65532 build/hash-regex-tail-guard/final-artifact.json "
             "build/hash-regex-tail-guard/manifest.json "
-            "/opt/router/build/hash-regex-tail-guard",
+            "/opt/router/build/hash-regex-tail-guard/",
             dockerfile,
         )
 
