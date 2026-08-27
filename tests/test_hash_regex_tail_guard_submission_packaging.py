@@ -49,6 +49,18 @@ class TailGuardSubmissionPackagingTest(unittest.TestCase):
             dockerfile,
         )
 
+    def test_docker_context_includes_only_the_v33_release_bundle(self) -> None:
+        dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
+
+        self.assertIn("!build/", dockerignore)
+        self.assertIn("build/**", dockerignore)
+        self.assertIn("!build/hash-regex-tail-guard/", dockerignore)
+        self.assertIn("build/hash-regex-tail-guard/**", dockerignore)
+        self.assertIn(
+            "!build/hash-regex-tail-guard/final-artifact.json", dockerignore
+        )
+        self.assertIn("!build/hash-regex-tail-guard/manifest.json", dockerignore)
+
     def test_container_entrypoint_uses_hash_regex_release_bundle_for_premium(self) -> None:
         from container import entrypoint
 

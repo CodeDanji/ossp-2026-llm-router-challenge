@@ -29,3 +29,9 @@ container/**
 !container/Dockerfile
 !container/measurement.Dockerfile
 !container/entrypoint.py
+!build/
+build/**
+!build/hash-regex-tail-guard/
+build/hash-regex-tail-guard/**
+!build/hash-regex-tail-guard/final-artifact.json
+!build/hash-regex-tail-guard/manifest.json
