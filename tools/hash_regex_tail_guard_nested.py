@@ -5,11 +5,18 @@ from __future__ import annotations
 from bisect import bisect_right
 from dataclasses import dataclass
 import math
+from numbers import Integral
 
 import numpy as np
 
+import hash_regex_cost_stabilization_nested as v32
+from promptbudget.safety import grouped_folds
+
 
 _ORDER_EPSILON = 1.0 + 1e-12
+_TAIL_QUANTILE = 0.90
+_HETEROGENEITY_MIN_SPREAD = math.log(1.10)
+_HETEROGENEITY_REQUIRED_SEEDS = 2
 
 
 def _finite_tuple(values: tuple[float, ...], size: int, label: str) -> tuple[float, ...]:
@@ -37,6 +44,25 @@ class TailGuard:
             if any(value < 0.0 for value in guards):
                 raise ValueError(f"{name} must be nonnegative")
             object.__setattr__(self, name, guards)
+
+    @classmethod
+    def from_oof_predictions(
+        cls, predictions: np.ndarray, residuals: np.ndarray
+    ) -> "TailGuard":
+        predicted = _log_cost_matrix(predictions)
+        residual = _log_cost_matrix(residuals)
+        if predicted.shape != residual.shape:
+            raise ValueError("OOF predictions and residuals must align")
+        ax31 = bucket_residual_summary(predicted[:, 1], residual[:, 1])
+        think = bucket_residual_summary(predicted[:, 2], residual[:, 2])
+        if not all(ax31["counts"]) or not all(think["counts"]):
+            raise ValueError("every tail bucket must contain OOF residuals")
+        return cls(
+            ax31_edges=ax31["edges"],
+            think_edges=think["edges"],
+            ax31_log_guards=tuple(max(0.0, value) for value in ax31["p90"]),
+            think_log_guards=tuple(max(0.0, value) for value in think["p90"]),
+        )
 
 
 def bucket_index(value: float, edges: tuple[float, float, float]) -> int:
@@ -96,3 +122,102 @@ def apply_tail_guard(
         if not np.isfinite(factors).all() or not np.isfinite(result[:, column]).all():
             raise ValueError("tail guard multiplication must be finite")
     return apply_ordering_clamp(result)
+
+
+def _higher_quantile(values: np.ndarray, quantile: float) -> float:
+    ordered = np.sort(values)
+    return float(ordered[math.ceil(quantile * len(ordered)) - 1])
+
+
+def bucket_residual_summary(
+    predictions: np.ndarray, residuals: np.ndarray
+) -> dict[str, object]:
+    predicted = np.asarray(predictions, dtype=float)
+    observed = np.asarray(residuals, dtype=float)
+    if (
+        predicted.ndim != 1
+        or observed.ndim != 1
+        or len(predicted) < 4
+        or predicted.shape != observed.shape
+        or not np.isfinite(predicted).all()
+        or not np.isfinite(observed).all()
+    ):
+        raise ValueError("bucket inputs must be aligned finite vectors of at least four rows")
+    edges = tuple(_higher_quantile(predicted, quantile) for quantile in (0.25, 0.50, 0.75))
+    buckets = tuple(
+        np.sort(observed[[bucket_index(value, edges) == index for value in predicted]])
+        for index in range(4)
+    )
+    def summarize(bucket: np.ndarray, quantile: float) -> float | None:
+        return _higher_quantile(bucket, quantile) if len(bucket) else None
+
+    return {
+        "edges": edges,
+        "counts": tuple(len(bucket) for bucket in buckets),
+        "p50": tuple(summarize(bucket, 0.50) for bucket in buckets),
+        "p90": tuple(summarize(bucket, _TAIL_QUANTILE) for bucket in buckets),
+        "p95": tuple(summarize(bucket, 0.95) for bucket in buckets),
+        "max": tuple(float(bucket[-1]) if len(bucket) else None for bucket in buckets),
+        "factors": tuple(
+            math.exp(value) if value is not None else None
+            for value in (summarize(bucket, _TAIL_QUANTILE) for bucket in buckets)
+        ),
+    }
+
+
+def _partition_indices(data: v32.EvaluationData, indices: tuple[int, ...]) -> tuple[int, ...]:
+    selected = tuple(indices)
+    if len(selected) < 4 or len(set(selected)) != len(selected):
+        raise ValueError("tail guard partition must contain unique rows")
+    if any(isinstance(index, bool) or not isinstance(index, Integral) for index in selected):
+        raise ValueError("tail guard partition indices must be integers")
+    if any(index < 0 or index >= len(data.groups) for index in selected):
+        raise ValueError("tail guard partition index is out of range")
+    if len({data.groups[index] for index in selected}) < 4:
+        raise ValueError("tail guard needs at least four content groups")
+    return tuple(int(index) for index in selected)
+
+
+def fit_tail_guard(
+    data: v32.EvaluationData, partition_indices: tuple[int, ...], seed: int
+) -> TailGuard:
+    selected = _partition_indices(data, partition_indices)
+    folds = grouped_folds(tuple(data.groups[index] for index in selected), folds=4, seed=seed)
+    oof = np.empty((len(selected), 3), dtype=float)
+    covered = np.zeros(len(selected), dtype=bool)
+    for fold in folds:
+        train_indices = tuple(selected[index] for index in fold.train_indices)
+        validation_indices = tuple(selected[index] for index in fold.validation_indices)
+        if set(data.groups[index] for index in train_indices) & set(
+            data.groups[index] for index in validation_indices
+        ):
+            raise ValueError("grouped OOF fold leaks a content group")
+        heads = v32.fit_log_cost_heads(
+            data.matrix[list(train_indices)], data.log_costs[list(train_indices)]
+        )
+        local_validation = tuple(fold.validation_indices)
+        if covered[list(local_validation)].any():
+            raise ValueError("grouped OOF coverage overlaps")
+        oof[list(local_validation)] = v32.predict_heads(
+            heads, data.matrix[list(validation_indices)]
+        )
+        covered[list(local_validation)] = True
+    if not covered.all() or not np.isfinite(oof).all():
+        raise ValueError("grouped OOF coverage is incomplete")
+    residuals = data.log_costs[list(selected)] - oof
+    return TailGuard.from_oof_predictions(oof, residuals)
+
+
+def diagnostic_status(reports: dict[int, dict[str, dict[str, object]]]) -> str:
+    for model in ("ax31", "think"):
+        passing = 0
+        for report in reports.values():
+            values = report.get(model, {}).get("p90")
+            if values is None:
+                continue
+            numeric = tuple(float(value) for value in values)
+            if len(numeric) == 4 and all(math.isfinite(value) for value in numeric):
+                passing += max(numeric) - min(numeric) >= _HETEROGENEITY_MIN_SPREAD
+        if passing >= _HETEROGENEITY_REQUIRED_SEEDS:
+            return "tail-signal-present"
+    return "tail-no-signal"
