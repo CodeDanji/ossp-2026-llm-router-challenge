@@ -6,7 +6,7 @@ import numpy as np
 
 import hash_regex_tail_guard_nested as tail_guard
 import hash_regex_v4_fill_screen as screen
-from ossp_router.protocol import MODEL_IDS, Episode, InputBatch, Outcome, OutcomeBatch, load_bundled_policy
+from ossp_router.protocol import MODEL_IDS, TIERS, Episode, InputBatch, Outcome, OutcomeBatch, load_bundled_policy
 from promptbudget.safety import grouped_folds
 
 
@@ -77,6 +77,9 @@ class HashRegexV4FillScreenTests(unittest.TestCase):
             )
         with self.assertRaises(ValueError):
             screen.screen_candidate(dev, grouped_folds(dev.groups, folds=4, seed=137), "fast-ax31-fill")
+        routes = {tier: (MODEL_IDS[0],) for tier in TIERS}
+        with self.assertRaises(ValueError):
+            screen.blocked_upgrade_diagnostic(dev, (0,), routes, routes)
 
     @staticmethod
     def _guard():

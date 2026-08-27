@@ -23,7 +23,7 @@ from hash_regex_v4_fill_screen import (
     blocked_upgrade_diagnostic,
     screen_candidate,
 )
-from ossp_router.protocol import ProtocolError, load_bundled_policy, load_input, load_outcomes
+from ossp_router.protocol import MODEL_IDS, ProtocolError, load_bundled_policy, load_input, load_outcomes
 from promptbudget.safety import grouped_folds
 from validate_data import validate_batches
 
@@ -98,10 +98,10 @@ def _official_recoverable_ax31_pool(
         return slack, 0
     recoverable = 0
     for local, (index, choice) in enumerate(zip(indices, baseline[tier].choices)):
-        if choice != "axk1-low" or data.scores[index, 1] <= data.scores[index, 0]:
+        if choice != MODEL_IDS[0] or data.scores[index, 1] <= data.scores[index, 0]:
             continue
         choices = list(baseline[tier].choices)
-        choices[local] = "axk1-instant"
+        choices[local] = MODEL_IDS[1]
         candidate = dict(baseline)
         candidate[tier] = v4.Route(tuple(choices), baseline[tier].predicted_ratio)
         upgraded_cost = Decimal(str(v4._score_routes(data, tuple(indices), candidate)["tiers"][tier]["total_cost"]))

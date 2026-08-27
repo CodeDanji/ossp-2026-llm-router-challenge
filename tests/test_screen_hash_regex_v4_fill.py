@@ -7,7 +7,7 @@ from unittest import mock
 import numpy as np
 
 import screen_hash_regex_v4_fill as cli
-from ossp_router.protocol import load_bundled_policy
+from ossp_router.protocol import MODEL_IDS, load_bundled_policy
 
 
 class ScreenHashRegexV4FillTest(unittest.TestCase):
@@ -65,7 +65,8 @@ class ScreenHashRegexV4FillTest(unittest.TestCase):
                 np.arange(12 * 270, dtype=float).reshape(12, 270) / 100.0,
                 tuple(f"group-{index}" for index in range(12)), np.zeros((12, 3)),
                 log_costs, np.exp(log_costs), load_bundled_policy(),
-                type("Inputs", (), {"episodes": tuple(range(12))})(), object(),
+                type("Inputs", (), {"episodes": tuple(range(12)), "split": "train"})(),
+                type("Outcomes", (), {"split": "train"})(),
             )
             with mock.patch.object(cli, "load_input", return_value=batch), mock.patch.object(
                 cli, "load_outcomes", return_value=batch
@@ -103,7 +104,7 @@ class ScreenHashRegexV4FillTest(unittest.TestCase):
 
     def test_recoverability_uses_official_decimal_cost_slack(self):
         data = type("Data", (), {"scores": np.asarray([[0.0, 1.0, 0.0]]), "costs": np.asarray([[1.0, 999.0, 999.0]])})()
-        baseline = {tier: cli.v4.Route(("axk1-low",), 0.0) for tier in ("fast", "balanced", "premium")}
+        baseline = {tier: cli.v4.Route((MODEL_IDS[0],), 0.0) for tier in ("fast", "balanced", "premium")}
         metrics = {"total_cost": "9.00", "budget_limit": "10.00"}
         with mock.patch.object(cli.v4, "_score_routes", return_value={"tiers": {"fast": {"total_cost": "9.50"}}}):
             slack, count = cli._official_recoverable_ax31_pool(data, (0,), baseline, "fast", metrics)

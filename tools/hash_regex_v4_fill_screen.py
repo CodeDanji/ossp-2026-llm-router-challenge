@@ -195,6 +195,7 @@ def blocked_upgrade_diagnostic(
 ) -> dict[str, object]:
     """Summarize held-out Raw non-Light -> guarded Light AX31 recovery opportunities."""
 
+    _require_train_data(data)
     selected = v32._validated_indices(data, tuple(indices))
     buckets = tuple(guarded_routes.get("guard_buckets", ()))
     if buckets and len(buckets) != len(selected):
