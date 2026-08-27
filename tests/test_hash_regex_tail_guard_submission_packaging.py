@@ -93,7 +93,7 @@ class TailGuardSubmissionPackagingTest(unittest.TestCase):
         from container import entrypoint
 
         self.assertEqual(
-            Path("/opt/router"),
+            Path("/opt/router/entrypoint.py").parent,
             entrypoint._runtime_root(Path("/opt/router/entrypoint.py")),
         )
         self.assertEqual(
